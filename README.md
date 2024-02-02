@@ -95,5 +95,6 @@ If you are willing to use our code or our models, please cite us with the follow
 
 ## Acknowledgements
 
+- Nicolò Brunello ([nicolo.brunello@polimi.it](mailto:nicolo.brunello@polimi.it))
 - Mark James Carman: ([mark.carman@polimi.it](mailto:mark.carman@.polimi.it))
 - Vincenzo Scotti: ([vincenzo.scotti@polimi.it](mailto:vincenzo.scotti@polimi.it))
