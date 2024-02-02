@@ -78,6 +78,12 @@ conda activate trwrap
 pip install -r requirements.txt
 ```
 
+To add the source code directory(ies) to the Python path, you can add this line to the file `~/.bashrc`
+
+```bash
+export PYTHONPATH=$PYTHONPATH:/path/to/transformer_wrappers/src
+```
+
 ## References
 
 If you are willing to use our code or our models, please cite us with the following reference(s):
