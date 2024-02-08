@@ -71,10 +71,11 @@ To install all the required packages within an Anaconda environment, run the fol
 
 ```bash
 # Create anaconda environment 
-conda create -n trwrap python=3.10 cudatoolkit=11.8
+conda create -n trwrap python=3.10
 # Activate anaconda environment
 conda activate trwrap
 # Install required packages
+conda install cuda -c nvidia
 pip install -r requirements.txt
 ```
 
