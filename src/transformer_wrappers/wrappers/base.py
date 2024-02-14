@@ -181,7 +181,9 @@ class PreTrainedModelWrapper(BaseWrapper):
         if isinstance(self.base_model, GPT2Model):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
             # Cache (past key-values)
-            past_key_values = past_key_values if past_key_values is not None else tuple([None] * len(self.layers))
+            past_key_values = past_key_values if past_key_values is not None else tuple(
+                [None] * self.config.num_hidden_layers
+            )
             cache = tuple() if use_cache else None
             # Position IDs
             prefix_length = cache[0][0].size(-2) if cache is not None else 0
