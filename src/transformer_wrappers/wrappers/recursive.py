@@ -5,6 +5,11 @@ from .base import PreTrainedModelWrapper, PreTrainedModelWrapperForCausalLM
 
 class RecursiveModelWrapper(PreTrainedModelWrapper):
     # TODO
+    # Stack iterations
+    # Block iterations
+    # block idxs
+    # Iterations map
+
     ...
 
 
