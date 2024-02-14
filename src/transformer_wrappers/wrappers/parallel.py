@@ -62,3 +62,6 @@ class ParallelModelWrapper(PreTrainedModelWrapper):
 
 class ParallelModelWrapperForCausalLMWrapper(PreTrainedModelWrapperForCausalLM):
     _wrapper_class: Type[PreTrainedModelWrapper] = ParallelModelWrapper
+
+    def prepare_inputs_for_generation(self, *args, rate: Optional[int] = None, **kwargs):
+        return super().prepare_inputs_for_generation(*args, **kwargs) | {'rate': rate}
