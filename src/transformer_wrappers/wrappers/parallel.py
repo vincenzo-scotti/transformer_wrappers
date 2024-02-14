@@ -54,7 +54,7 @@ class ParallelModelWrapper(PreTrainedModelWrapper):
     def forward(self, *args, rate: Optional[int] = None, **kwargs):
         # Check input validity
         rate = self.rate if rate is None else rate
-        if (self.config.num_hidden_layers // rate) * rate != self.config.num_hidden_layers:
+        if self.config.num_hidden_layers % rate != 0:
             raise ValueError('`rate` must be an integer divisor of `num_hidden_layers`')
         #
         return super().forward(*args, **kwargs, rate=rate)
