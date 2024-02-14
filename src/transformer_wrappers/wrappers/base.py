@@ -136,3 +136,5 @@ class PreTrainedModelWrapperForCausalLM(PreTrainedModelWrapper):
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()
         self._model.prepare_inputs_for_generation(*args, **kwargs)
+
+    # TODO implement other PreTrainedModel methods
