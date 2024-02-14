@@ -9,6 +9,9 @@ from transformers import DynamicCache
 from .base import PreTrainedModelWrapper, PreTrainedModelWrapperForCausalLM
 
 
+__all__ = ['ParallelModelWrapper', 'ParallelModelWrapperForCausalLMWrapper']
+
+
 class ParallelModelWrapper(PreTrainedModelWrapper):
     RATE: str = 'rate'
 
