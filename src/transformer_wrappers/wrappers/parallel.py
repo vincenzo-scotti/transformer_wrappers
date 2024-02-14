@@ -57,7 +57,7 @@ class ParallelModelWrapper(PreTrainedModelWrapper):
         if (self.config.num_hidden_layers // rate) * rate != self.config.num_hidden_layers:
             raise ValueError('`rate` must be an integer divisor of `num_hidden_layers`')
         #
-        super().forward(*args, **kwargs, rate=rate)
+        return super().forward(*args, **kwargs, rate=rate)
 
 
 class ParallelModelWrapperForCausalLMWrapper(PreTrainedModelWrapperForCausalLM):
