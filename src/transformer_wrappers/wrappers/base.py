@@ -11,7 +11,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GPT2Model, LlamaModel, MistralModel
 from transformers.cache_utils import Cache, DynamicCache
-from transformers.modeling_outputs import BaseModelOutputWithPast
+from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa, _prepare_4d_causal_attention_mask
 )
@@ -474,6 +474,41 @@ class PreTrainedModelWrapper(BaseWrapper):
 
         return hidden_states, hidden_states_stack, self_attentions_stack, cache
 
+    def _model_specific_postprocessing(
+            self,
+            hidden_states: torch.FloatTensor,
+            hidden_states_stack: Optional[Iterable[torch.FloatTensor]],
+            self_attentions_stack: Optional[Iterable[torch.FloatTensor]],
+            cache: Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]],
+    ) -> Union[BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions]:
+        #
+        if isinstance(self.base_model, GPT2Model):
+            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
+            return BaseModelOutputWithPastAndCrossAttentions(
+                last_hidden_state=hidden_states,
+                past_key_values=cache,
+                hidden_states=hidden_states_stack,
+                attentions=self_attentions_stack
+            )
+        elif isinstance(self.base_model, LlamaModel):
+            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
+            return BaseModelOutputWithPast(
+                last_hidden_state=hidden_states,
+                past_key_values=cache,
+                hidden_states=hidden_states_stack,
+                attentions=self_attentions_stack
+            )
+        elif isinstance(self.base_model, MistralModel):
+            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
+            return BaseModelOutputWithPast(
+                last_hidden_state=hidden_states,
+                past_key_values=cache,
+                hidden_states=hidden_states_stack,
+                attentions=self_attentions_stack
+            )
+        else:
+            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+
     def _post_process_output(
             self,
             hidden_states: torch.FloatTensor,
@@ -481,7 +516,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             self_attentions_stack: Optional[Iterable[torch.FloatTensor]],
             cache: Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]],
             return_dict: Optional[bool],
-    ) -> Union[BaseModelOutputWithPast, Tuple]:
+    ) -> Union[BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions, Tuple]:
         # TODO expand supported models (e.g., GPT-2 uses output with past and cross-attention)
         #
         if cache is not None and isinstance(cache, DynamicCache):
@@ -492,12 +527,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             )
         #
         if return_dict:
-            return BaseModelOutputWithPast(
-                last_hidden_state=hidden_states,
-                past_key_values=cache,
-                hidden_states=hidden_states_stack,
-                attentions=self_attentions_stack,
-            )
+            return self._model_specific_postprocessing(hidden_states, cache, hidden_states_stack, self_attentions_stack)
         else:
             return tuple(v for v in [hidden_states, cache, hidden_states_stack, self_attentions_stack] if v is not None)
 
@@ -529,7 +559,7 @@ class PreTrainedModelWrapper(BaseWrapper):
         # TODO implement other PreTrainedModel methods
     
 
-class PreTrainedModelWrapperForCausalLM(PreTrainedModelWrapper):
+class PreTrainedModelWrapperForCausalLM(BaseWrapper):
     _auto_model_class: Type[PreTrainedModel] = AutoModelForCausalLM
     _wrapper_class: Type[PreTrainedModelWrapper] = PreTrainedModelWrapper
 
@@ -538,11 +568,11 @@ class PreTrainedModelWrapperForCausalLM(PreTrainedModelWrapper):
         #
         self._lm_transformer_attr: LMTransformerAttr = self._get_lm_transformer_attr()
         self._wrapper = self._wrapper_class(
-            getattr(self._model, self._transformer_nn_attr.value), self._tokenizer
+            getattr(self._model, self._lm_transformer_attr.value), self._tokenizer
         )
 
     def _get_lm_transformer_attr(self) -> LMTransformerAttr:
-        return getattr(self._model, self._lm_transformer_attr.value)
+        return self._get_model_attr(self._model, LMTransformerAttr)
 
     def save_pretrained(self, *args, **kwargs):
         with warnings.catch_warnings():
@@ -581,10 +611,10 @@ class PreTrainedModelWrapperForCausalLM(PreTrainedModelWrapper):
 
     def forward(self, *args, **kwargs):
         self.enable_wrapper()
-        self._model.forward(*args, **kwargs)
+        return self._model.forward(*args, **kwargs)
 
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()
-        self._model.prepare_inputs_for_generation(*args, **kwargs)
+        return self._model.prepare_inputs_for_generation(*args, **kwargs)
 
     # TODO implement other PreTrainedModel methods
