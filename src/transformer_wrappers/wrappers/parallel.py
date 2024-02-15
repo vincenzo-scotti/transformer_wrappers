@@ -1,5 +1,3 @@
-from itertools import batched
-
 from typing import Type, Optional, Iterable, Tuple, Union
 
 import torch
@@ -20,7 +18,8 @@ class ParallelModelWrapper(PreTrainedModelWrapper):
         self.rate: int = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(self.RATE, 1)
 
     def _layers_iterator(self, *args, rate: int = 1, **kwargs) -> Iterable:
-        return batched(self.layers, rate)
+        for i in range(0, len(self.layers) // rate):
+            yield (layer for layer in self.layers[i * rate: (i + 1) * rate])
 
     def _layer_wrapped_forward(
             self,

@@ -149,7 +149,7 @@ class PreTrainedModelWrapper(BaseWrapper):
         return getattr(self._model, self._transformer_norm_attr.value)
 
     @property
-    def training(self) -> bool:
+    def is_training(self) -> bool:
         return self._model.training
 
     @property
@@ -186,7 +186,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             )
             cache = tuple() if use_cache else None
             # Position IDs
-            prefix_length = cache[0][0].size(-2) if cache is not None else 0
+            prefix_length = past_key_values[0][0].size(-2) if past_key_values[0] is not None else 0
             position_ids = position_ids.unsqueeze(0) if position_ids is not None else torch.arange(
                 prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
             ).unsqueeze(0)
@@ -205,10 +205,10 @@ class PreTrainedModelWrapper(BaseWrapper):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
             # Cache (past key-values)
             if past_key_values is not None and not isinstance(past_key_values, Cache):
-                cache = DynamicCache.from_legacy_cache(past_key_values)
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             cache = None
             # Position IDs
-            prefix_length = cache.get_usable_length(seq_length)
+            prefix_length = past_key_values.get_usable_length(seq_length)
             # Attention mask
             attention_mask = self._update_causal_mask(valid_mask, input_embeddings)
             # Hidden states
@@ -217,10 +217,10 @@ class PreTrainedModelWrapper(BaseWrapper):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
             # Cache (past key-values)
             if not isinstance(past_key_values, DynamicCache):
-                cache = DynamicCache.from_legacy_cache(past_key_values)
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             cache = None
             # Position IDs
-            prefix_length = cache.get_usable_length(seq_length)
+            prefix_length = past_key_values.get_usable_length(seq_length)
             position_ids = position_ids.view(-1, seq_length).long() if position_ids is not None else torch.arange(
                 prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
             ).unsqueeze(0).view(-1, seq_length)
@@ -275,7 +275,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
-        if self.gradient_checkpointing and self.training and use_cache:
+        if self.gradient_checkpointing and self.is_training and use_cache:
             logger.warning('`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.')
             use_cache = False
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
@@ -321,7 +321,7 @@ class PreTrainedModelWrapper(BaseWrapper):
     ) -> Tuple[Tuple, Dict]:
         #
         args = (hidden_states, )
-        kwargs = dict() if self.gradient_checkpointing and self.training else {
+        kwargs = dict() if self.gradient_checkpointing and self.is_training else {
             'attention_mask': attention_mask,
             'output_attentions': output_attentions,
             'use_cache': use_cache
@@ -329,7 +329,7 @@ class PreTrainedModelWrapper(BaseWrapper):
         #
         if isinstance(self.base_model, GPT2Model):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
-            if self.gradient_checkpointing and self.training:
+            if self.gradient_checkpointing and self.is_training:
                 args += (
                     None,
                     attention_mask,
@@ -343,7 +343,7 @@ class PreTrainedModelWrapper(BaseWrapper):
                 kwargs |= {'layer_past': past_key_values[idx]}  # TODO check this in presence of multiple iterations
         elif isinstance(self.base_model, LlamaModel):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
-            if self.gradient_checkpointing and self.training:
+            if self.gradient_checkpointing and self.is_training:
                 args += (
                     attention_mask,
                     position_ids,
@@ -355,7 +355,7 @@ class PreTrainedModelWrapper(BaseWrapper):
                 kwargs |= {'past_key_value': past_key_values}
         elif isinstance(self.base_model, MistralModel):
             # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
-            if self.gradient_checkpointing and self.training:
+            if self.gradient_checkpointing and self.is_training:
                 args += (
                     attention_mask,
                     position_ids,
@@ -376,26 +376,31 @@ class PreTrainedModelWrapper(BaseWrapper):
             hidden_states_stack,
             self_attentions_stack,
             cache,
+            use_cache: bool,
             output_attentions: bool,
-            output_hidden_states: bool,
-            use_cache: bool
+            output_hidden_states: bool
+
     ) -> Tuple[
         torch.FloatTensor,
         Optional[Iterable[torch.FloatTensor]],
         Optional[Iterable[torch.FloatTensor]],
         Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]]
     ]:
-        if use_cache:
+        cache_update = self_attentions = None
+        if use_cache and output_attentions:
             hidden_states, cache_update, self_attentions, *_ = layer_output
-        else:
-            cache_update = None
+        elif use_cache:
+            hidden_states, cache_update, *_ = layer_output
+        elif output_attentions:
             hidden_states, self_attentions, *_ = layer_output
+        else:
+            hidden_states, *_ = layer_output
         #
         if use_cache is True:
             if isinstance(cache, DynamicCache):
                 cache = cache_update
             else:
-                cache += (layer_output[1],)
+                cache += (cache_update,)
         #
         if output_hidden_states:
             hidden_states_stack += (hidden_states,)
@@ -427,7 +432,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             use_cache, output_attentions, output_hidden_states, return_dict,
             ** kwargs
         )
-        if self.gradient_checkpointing and self.training:
+        if self.gradient_checkpointing and self.is_training:
             layer_outputs = self.base_model._gradient_checkpointing_func(layer.__call__, *input_args, **input_kwargs)
         else:
             layer_outputs = layer(*input_args, **input_kwargs)
@@ -481,6 +486,10 @@ class PreTrainedModelWrapper(BaseWrapper):
         #
         if cache is not None and isinstance(cache, DynamicCache):
             cache = cache.to_legacy_cache()
+        if self_attentions_stack is not None:
+            logger.warning(
+                'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
+            )
         #
         if return_dict:
             return BaseModelOutputWithPast(
