@@ -2,11 +2,11 @@ import unittest
 
 import torch
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
-from transformer_wrappers.wrappers import PreTrainedModelWrapper, PreTrainedModelWrapperForCausalLM
+from transformer_wrappers.wrappers import ParallelModelWrapper, ParallelModelWrapperForCausalLMWrapper
 
 
-class TestPreTrainedModelWrapper(unittest.TestCase):
-    def test_gpt2_forward(self):
+class TestParallelModelWrapper(unittest.TestCase):
+    def test_gpt2_forward_no_parallel(self):
         transformer = 'gpt2'
         input_string = 'Hello, World!\n'
 
@@ -17,7 +17,7 @@ class TestPreTrainedModelWrapper(unittest.TestCase):
             **input_encodings, return_dict=True, output_attentions=True, use_cache=True, output_hidden_states=True
         )
 
-        model = PreTrainedModelWrapper.from_pretrained(transformer)
+        model = ParallelModelWrapper.from_pretrained(transformer)
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model(
             **input_encodings, return_dict=True, output_attentions=True, use_cache=True, output_hidden_states=True
@@ -58,8 +58,8 @@ class TestPreTrainedModelWrapper(unittest.TestCase):
             ), f'`attentions` tensors at layer {i} not matching.'
 
 
-class TestPreTrainedModelWrapperForCausalLM(unittest.TestCase):
-    def test_gpt2_generate(self):
+class TestParallelModelWrapperForCausalLMWrapper(unittest.TestCase):
+    def test_gpt2_generate_no_parallel(self):
         transformer = 'gpt2'
         input_string = 'Hello, World!\n'
 
@@ -68,7 +68,7 @@ class TestPreTrainedModelWrapperForCausalLM(unittest.TestCase):
         input_encodings = tokenizer(input_string, return_tensors='pt')
         output = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
-        model = PreTrainedModelWrapperForCausalLM.from_pretrained(transformer)
+        model = ParallelModelWrapperForCausalLMWrapper.from_pretrained(transformer)
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
