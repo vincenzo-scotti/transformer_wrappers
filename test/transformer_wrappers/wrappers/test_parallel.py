@@ -41,14 +41,16 @@ class TestParallelModelWrapper(unittest.TestCase):
                 assert torch.equal(
                     output_hidden_state, output_wrapper_hidden_state
                 ), f'`hidden_state` tensors at layer {i} not matching.'
-        for i, (output_past_key_values, output_output_past_key_values) in enumerate(zip(
+        for i, (output_past_key_values, output_wrapper_past_key_values) in enumerate(zip(
                 output.past_key_values, output_wrapper.past_key_values
         ), start=1):
+            output_past_keys, output_past_values = output_past_key_values
+            output_wrapper_past_keys, output_wrapper_past_values = output_wrapper_past_key_values
             assert torch.equal(
-                output_past_key_values[0], output_output_past_key_values[0]
+                output_past_keys, output_wrapper_past_keys
             ), f'`key` tensors at layer {i} not matching.'
             assert torch.equal(
-                output_past_key_values[1], output_output_past_key_values[1]
+                output_past_values, output_wrapper_past_values
             ), f'`value` tensors at layer {i} not matching.'
         for i, (output_attentions, output_wrapper_attentions) in enumerate(zip(
                 output.attentions, output_wrapper.attentions

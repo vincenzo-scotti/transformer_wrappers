@@ -156,6 +156,9 @@ class PreTrainedModelWrapper(BaseWrapper):
     def gradient_checkpointing(self):
         return self._model.gradient_checkpointing
 
+    def preprocess_wrapper_params(self, **kwargs) -> Dict:
+        raise NotImplementedError()
+
     def _model_specific_preprocessing(
             self,
             input_embeddings: torch.FloatTensor,
@@ -612,6 +615,13 @@ class PreTrainedModelWrapperForCausalLM(BaseWrapper):
     def forward(self, *args, **kwargs):
         self.enable_wrapper()
         return self._model.forward(*args, **kwargs)
+
+    def _update_wrapper_attributes(self, **kwargs) -> Dict:
+        old_attributes = dict()
+        for attr, val in kwargs.items():
+            old_attributes[attr] = getattr(self.wrapper, attr)
+            setattr(self.wrapper, attr, val)
+        return old_attributes
 
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()

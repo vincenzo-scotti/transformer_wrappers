@@ -13,6 +13,14 @@ __all__ = ['RecursiveModelWrapper', 'RecursiveModelWrapperForCausalLMWrapper']
 
 
 class RecursiveModelWrapper(PreTrainedModelWrapper):
+    ITERATIONS: str = 'iterations'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.iterations: Optional[List[int]] = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(
+            self.ITERATIONS, [1] * self.config.num_hidden_layers
+        )
+
     def _layers_iterator(self, *args, iterations: Optional[List[int]] = None, **kwargs) -> Iterable:
         for i, (n_iter, layer) in zip(iterations, cycle(self.layers)):
             if n_iter > 0:
@@ -21,11 +29,11 @@ class RecursiveModelWrapper(PreTrainedModelWrapper):
     def _layer_wrapped_forward(
             self,
             idx: int, args: Tuple[int, nn.Module],
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack,
+            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
             batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, cache, valid_mask,
+            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
             use_cache, output_attentions, output_hidden_states, return_dict,
-            rate: int = 1, **kwargs
+            iterations: Optional[List] = None, **kwargs
     ) -> Tuple[
         torch.FloatTensor,
         Optional[Iterable[torch.FloatTensor]],
@@ -37,19 +45,21 @@ class RecursiveModelWrapper(PreTrainedModelWrapper):
         #
         hidden_states, hidden_states_stack, self_attentions_stack, cache = super()._layer_wrapped_forward(
             layer_idx, layer,
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack,
+            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
             batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, cache, valid_mask,
+            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
             use_cache, output_attentions, output_hidden_states, return_dict,
             **kwargs
         )
         #
         return hidden_states, hidden_states_stack, self_attentions_stack, cache
 
-    def forward(self, *args, iterations: Optional[List[int]] = None, **kwargs):
+    def forward(self, *args, iterations: Optional[Union[int, List[int]]] = None, **kwargs):
         # TODO add alternative methods to pass number of iterations
         # Check input validity
         iterations = self.iterations if iterations is None else iterations
+        if isinstance(iterations, int):
+            iterations = [iterations] * self.config.num_hidden_layers
         if len(iterations) % self.config.num_hidden_layers != 0:
             raise ValueError('The elements if `iterations` must be a multiple of `num_hidden_layers`')
         #
