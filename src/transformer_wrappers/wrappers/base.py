@@ -527,7 +527,7 @@ class PreTrainedModelWrapper(BaseWrapper):
             )
         #
         if return_dict:
-            return self._model_specific_postprocessing(hidden_states, cache, hidden_states_stack, self_attentions_stack)
+            return self._model_specific_postprocessing(hidden_states, hidden_states_stack, self_attentions_stack, cache)
         else:
             return tuple(v for v in [hidden_states, cache, hidden_states_stack, self_attentions_stack] if v is not None)
 
