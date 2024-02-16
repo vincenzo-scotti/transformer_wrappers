@@ -27,7 +27,7 @@ class RecursiveModelWrapper(PreTrainedModelWrapper):
 
     def _layers_iterator(self, *args, iterations: Optional[List[int]] = None, **kwargs) -> Iterable:
         for i, (n_iter, layer) in enumerate(zip(iterations, cycle(self.layers))):
-            if n_iter > 0:
+            for _ in range(n_iter):
                 yield i % self.config.num_hidden_layers, layer
 
     def _layer_wrapped_forward(
