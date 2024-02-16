@@ -5,11 +5,15 @@ from typing import Type, Iterable, Optional, Tuple, Union, List
 import torch
 import torch.nn as nn
 from transformers import DynamicCache
+from transformers import logging
 
 from .base import PreTrainedModelWrapper, PreTrainedModelWrapperForCausalLM
 
 
 __all__ = ['RecursiveModelWrapper', 'RecursiveModelWrapperForCausalLMWrapper']
+
+
+logger = logging.get_logger(__name__)
 
 
 class RecursiveModelWrapper(PreTrainedModelWrapper):
@@ -54,7 +58,7 @@ class RecursiveModelWrapper(PreTrainedModelWrapper):
         #
         return hidden_states, hidden_states_stack, self_attentions_stack, cache
 
-    def forward(self, *args, iterations: Optional[Union[int, List[int]]] = None, **kwargs):
+    def preprocess_wrapper_params(self, iterations: Optional[Union[int, List[int]]] = None):
         # TODO add alternative methods to pass number of iterations
         # Check input validity
         iterations = self.iterations if iterations is None else iterations
@@ -63,11 +67,26 @@ class RecursiveModelWrapper(PreTrainedModelWrapper):
         if len(iterations) % self.config.num_hidden_layers != 0:
             raise ValueError('The elements if `iterations` must be a multiple of `num_hidden_layers`')
         #
-        return super().forward(*args, **kwargs, iterations=iterations)
+        return {self.ITERATIONS: iterations}
+
+    def forward(self, *args, iterations: Optional[Union[int, List[int]]] = None, **kwargs):
+        #
+        kwargs |= self.preprocess_wrapper_params(iterations=iterations)
+        return super().forward(*args, **kwargs)
 
 
 class RecursiveModelWrapperForCausalLMWrapper(PreTrainedModelWrapperForCausalLM):
     _wrapper_class: Type[PreTrainedModelWrapper] = RecursiveModelWrapper
+
+    def forward(self, *args, iterations: Optional[Union[int, List[int]]] = None, **kwargs):
+        logger.warning('Do not use recursive model concurrently, it may lead to unforeseen behaviour.')
+        old_attributes = self._update_wrapper_attributes(
+            **self.wrapper.preprocess_wrapper_params(iterations=iterations)
+        )
+        output = super().forward(*args, **kwargs)
+        _ = self._update_wrapper_attributes(**old_attributes)
+
+        return output
 
     def prepare_inputs_for_generation(self, *args, iterations: Optional[List[int]] = None, **kwargs):
         return super().prepare_inputs_for_generation(*args, **kwargs) | {'iterations': iterations}
