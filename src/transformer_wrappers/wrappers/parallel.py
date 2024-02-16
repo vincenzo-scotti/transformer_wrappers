@@ -19,7 +19,6 @@ class ParallelModelWrapper(PreTrainedModelWrapper):
     BLOCKS: str = 'blocks'
     RATE: str = 'rate'
 
-
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.blocks: Optional[int] = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(self.BLOCKS)
