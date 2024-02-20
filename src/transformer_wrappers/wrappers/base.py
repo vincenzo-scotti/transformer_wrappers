@@ -47,7 +47,7 @@ class LMTransformerAttr(Enum):
 AttrEnumTypes: Type = Union[TransformerEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr, LMTransformerAttr]
 
 
-class BaseWrapper(PreTrainedModel):
+class TransformerWrapper(PreTrainedModel):
     TASK_SPECIFIC_CONFIGS_KEY: str = 'task_specific_params'
     WRAPPER_CONFIGS_KEY: str = 'wrapper'
 
@@ -119,7 +119,7 @@ class BaseWrapper(PreTrainedModel):
         raise NotImplementedError()
 
 
-class PreTrainedModelWrapper(BaseWrapper):
+class PreTrainedModelWrapper(TransformerWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         #
@@ -562,7 +562,7 @@ class PreTrainedModelWrapper(BaseWrapper):
         # TODO implement other PreTrainedModel methods
     
 
-class PreTrainedModelWrapperForCausalLM(BaseWrapper):
+class PreTrainedModelWrapperForCausalLM(TransformerWrapper):
     _auto_model_class: Type[PreTrainedModel] = AutoModelForCausalLM
     _wrapper_class: Type[PreTrainedModelWrapper] = PreTrainedModelWrapper
 
