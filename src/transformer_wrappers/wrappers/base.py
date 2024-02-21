@@ -18,7 +18,14 @@ from transformers.modeling_attn_mask_utils import (
 from transformers import logging
 
 
-__all__ = ['PreTrainedModelWrapper', 'PreTrainedModelWrapperForCausalLM']
+__all__ = [
+    'EmbeddingWrapper',
+    'AttentionWrapper',
+    'FeedForwardWrapper',
+    'LayerWrapper',
+    'PreTrainedModelWrapper',
+    'PreTrainedModelWrapperForCausalLM'
+]
 
 
 logger = logging.get_logger(__name__)
@@ -27,6 +34,25 @@ logger = logging.get_logger(__name__)
 class TransformerEmbeddingAttr(Enum):
     EMBED_TOKENS = 'embed_tokens'
     WTE = 'wte'
+
+
+class LayerInitialNormAttr(Enum):
+    INPUT_LAYERNORM = 'input_layernorm'
+    LN_1 = 'ln_1'
+
+
+class LayerAttentionAttr(Enum):
+    SELF_ATTN = 'self_attn'
+    ATTN = 'attn'
+
+
+class LayerIntermediateNormAttr(Enum):
+    INPUT_LAYERNORM = 'input_layernorm'
+    LN_2 = 'ln_2'
+
+
+class LayerFeedForwardAttr(Enum):
+    MLP = 'mlp'
 
 
 class TransformerLayersAttr(Enum):
@@ -42,16 +68,170 @@ class TransformerNormAttr(Enum):
 class LMTransformerAttr(Enum):
     MODEL = 'model'
     TRANSFORMER = 'transformer'
+    
+    
+class LMHeadAttr(Enum):
+    LM_HEAD = 'lm_head'
 
 
-AttrEnumTypes: Type = Union[TransformerEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr, LMTransformerAttr]
+AttrEnumTypes: Type = Union[
+    LayerInitialNormAttr, LayerAttentionAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
+    TransformerEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr, 
+    LMTransformerAttr, LMHeadAttr
+]
+
+
+def _get_module_attr_name(model: nn.Module, attr_names: Type[AttrEnumTypes]):
+    #
+    for attr in attr_names:
+        if hasattr(model, attr.value):
+            return attr
+    #
+    raise ValueError(f'Unsupported module type `{type(model)}` for attribute `{attr_names}`.')
+
+
+class BaseWrapper:
+    @property
+    def is_wrapping(self) -> bool:
+        return True
+
+    def enable_wrapper(self):
+        pass
+
+    def disable_wrapper(self):
+        pass
+
+
+class ModuleWrapper(nn.Module, BaseWrapper):
+    _module_name: str = 'module'
+    module_attr: Optional[Type[AttrEnumTypes]] = None
+
+    def __init__(self, module: nn.Module):
+        self._module: nn.Module = module
+        super().__init__()
+
+    @property
+    def base_module(self) -> nn.Module:
+        logger.warning(f'The returned base {self._module_name} may be modified.')
+        self.disable_wrapper()
+        return self._module
+
+    def forward(self, *args, **kwargs):
+        self.enable_wrapper()
+        return self.module.forward(*args, **kwargs)
+
+
+class EmbeddingWrapper(ModuleWrapper):
+    _module_name: str = 'embedding module'
+    module_attr = TransformerEmbeddingAttr
+
+
+class AttentionWrapper(ModuleWrapper):
+    _module_name: str = 'attention module'
+    module_attr = LayerAttentionAttr
+
+
+class FeedForwardWrapper(ModuleWrapper):
+    _module_name: str = 'feed forward module'
+    module_attr = LayerFeedForwardAttr
+
+
+class LayerWrapper(nn.Module):
+    _module_name: str = 'layer module'
+
+    _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
+    _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
+
+    def __init__(self, layer: nn.Module):
+        super().__init__(layer)
+        # Attribute names
+        self._initial_norm_attr: LayerInitialNormAttr = self._get_initial_norm_attr()
+        self._attention_attr: LayerAttentionAttr = self._get_attention_attr()
+        self._intermediate_norm_attr: LayerIntermediateNormAttr = self._get_intermediate_norm_attr()
+        self._feed_forward_attr: LayerFeedForwardAttr = self._get_feed_forward_attr()
+        # Wrappers
+        self._attention_wrapper = self._attention_dtype(getattr(self._module, self._layer_attention_attr.value))
+        self._feed_forward_wrapper = self._feed_forward_dtype(getattr(self._module, self._feed_forward_attr.value))
+
+    @property
+    def is_attention_wrapping(self):
+        return isinstance(getattr(self.base_module, self._attention_attr.value), self._attention_dtype)
+
+    @property
+    def is_feed_forward_wrapping(self):
+        return isinstance(getattr(self.base_module, self._feed_forward_attr.value), self._feed_forward_dtype)
+
+    @property
+    def is_wrapping(self):
+        return self.is_attention_wrapping or self.is_feed_forward_wrapping  # TODO Decide for 'or' or 'and'
+
+    def enable_attention_wrapper(self):
+        setattr(self.base_module, self._attention_attr.value, self.attention_wrapper)
+
+    def enable_feed_forward_wrapper(self):
+        setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper)
+
+    def enable_wrapper(self):
+        if not self.is_wrapping:
+            self.enable_attention_wrapper()
+            self.enable_feed_forward_wrapper()
+
+    def disable_attention_wrapper(self):
+        setattr(self.base_module, self._attention_attr.value, self.attention_wrapper.base_module)
+
+    def disable_feed_forward_wrapper(self):
+        setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper.base_module)
+
+    def disable_wrapper(self):
+        if self.is_wrapping:
+            self.disable_attention_wrapper()
+            self.disable_feed_forward_wrapper()
+
+    def _get_initial_norm_attr(self) -> LayerInitialNormAttr:
+        return _get_module_attr_name(self.base_module, LayerInitialNormAttr)
+
+    def _get_attention_attr(self) -> LayerAttentionAttr:
+        return _get_module_attr_name(self.base_module, LayerAttentionAttr)
+
+    def _get_intermediate_norm_attr(self) -> LayerIntermediateNormAttr:
+        return _get_module_attr_name(self.base_module, LayerIntermediateNormAttr)
+
+    def _get_feed_forward_attr(self) -> LayerFeedForwardAttr:
+        return _get_module_attr_name(self.base_module, LayerFeedForwardAttr)
+
+    @property
+    def initial_norm(self) -> nn.Module:
+        return getattr(self.base_module, self._layer_norm_attr)
+
+    @property
+    def attention(self):
+        return self.attention_wrapper.base_module
+
+    @property
+    def attention_wrapper(self) -> AttentionWrapper:
+        return self._attention_wrapper
+
+    @property
+    def intermediate_norm(self) -> nn.Module:
+        return getattr(self.base_module, self._layer_norm_attr)
+
+    @property
+    def feed_forward(self):
+        return self.feed_forward_wrapper.base_module
+
+    @property
+    def feed_forward_wrapper(self):
+        return self._feed_forward_wrapper
 
 
 class TransformerWrapper(PreTrainedModel):
     TASK_SPECIFIC_CONFIGS_KEY: str = 'task_specific_params'
     WRAPPER_CONFIGS_KEY: str = 'wrapper'
 
-    _auto_model_class: Type[PreTrainedModel] = AutoModel
+    _auto_model_dtype: Type[PreTrainedModel] = AutoModel
+
+    _embedding_wrapper_dtype: Type[ModuleWrapper] = EmbeddingWrapper
+    _layer_wrapper_dtype: Type[ModuleWrapper] = LayerWrapper
 
     def __init__(
             self,
@@ -62,15 +242,6 @@ class TransformerWrapper(PreTrainedModel):
         #
         self._model: PreTrainedModel = model
         self._tokenizer: PreTrainedTokenizer = tokenizer
-
-    @staticmethod
-    def _get_model_attr(model: PreTrainedModel, attr_names: Type[AttrEnumTypes]):
-        #
-        for attr in attr_names:
-            if hasattr(model, attr.value):
-                return attr
-        #
-        raise ValueError(f'Unsupported model type `{type(model)}`.')
 
     @classmethod
     def from_pretrained(
@@ -92,7 +263,7 @@ class TransformerWrapper(PreTrainedModel):
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
         wrapper = cls(
-            cls._auto_model_class.from_pretrained(
+            cls._auto_model_dtype.from_pretrained(
                 pretrained_model_name_or_path,
                 *model_args,
                 **model_kwargs
@@ -128,13 +299,13 @@ class PreTrainedModelWrapper(TransformerWrapper):
         self._transformer_norm_attr: TransformerNormAttr = self._get_transformer_norm_attr()
 
     def _get_transformer_embedding_attr(self) -> TransformerEmbeddingAttr:
-        return self._get_model_attr(self._model, TransformerEmbeddingAttr)
+        return _get_module_attr_name(self._model, TransformerEmbeddingAttr)
 
     def _get_transformer_layers_attr(self) -> TransformerLayersAttr:
-        return self._get_model_attr(self._model, TransformerLayersAttr)
+        return _get_module_attr_name(self._model, TransformerLayersAttr)
 
     def _get_transformer_norm_attr(self) -> TransformerNormAttr:
-        return self._get_model_attr(self._model, TransformerNormAttr)
+        return _get_module_attr_name(self._model, TransformerNormAttr)
 
     @property
     def embedding(self) -> nn.Embedding:
@@ -560,10 +731,14 @@ class PreTrainedModelWrapper(TransformerWrapper):
         )
 
         # TODO implement other PreTrainedModel methods
+
+
+class LMHeadWrapper(ModuleWrapper):
+    module_attr = LMHeadAttr
     
 
 class PreTrainedModelWrapperForCausalLM(TransformerWrapper):
-    _auto_model_class: Type[PreTrainedModel] = AutoModelForCausalLM
+    _auto_model_dtype: Type[PreTrainedModel] = AutoModelForCausalLM
     _wrapper_class: Type[PreTrainedModelWrapper] = PreTrainedModelWrapper
 
     def __init__(self, *args, **kwags):
@@ -575,7 +750,7 @@ class PreTrainedModelWrapperForCausalLM(TransformerWrapper):
         )
 
     def _get_lm_transformer_attr(self) -> LMTransformerAttr:
-        return self._get_model_attr(self._model, LMTransformerAttr)
+        return _get_module_attr_name(self._model, LMTransformerAttr)
 
     def save_pretrained(self, *args, **kwargs):
         with warnings.catch_warnings():
