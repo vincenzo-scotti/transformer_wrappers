@@ -167,10 +167,12 @@ class LayerWrapper(ModuleWrapper):
         return self.is_attention_wrapping or self.is_feed_forward_wrapping  # TODO Decide for 'or' or 'and'
 
     def enable_attention_wrapper(self):
-        setattr(self.base_module, self._attention_attr.value, self.attention_wrapper)
+        if not self.is_attention_wrapping:
+            setattr(self.base_module, self._attention_attr.value, self.attention_wrapper)
 
     def enable_feed_forward_wrapper(self):
-        setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper)
+        if not self.is_feed_forward_wrapping:
+            setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper)
 
     def enable_wrapper(self):
         if not self.is_wrapping:
@@ -178,10 +180,12 @@ class LayerWrapper(ModuleWrapper):
             self.enable_feed_forward_wrapper()
 
     def disable_attention_wrapper(self):
-        setattr(self.base_module, self._attention_attr.value, self.attention_wrapper.base_module)
+        if self.is_attention_wrapping:
+            setattr(self.base_module, self._attention_attr.value, self.attention_wrapper.base_module)
 
     def disable_feed_forward_wrapper(self):
-        setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper.base_module)
+        if self.is_feed_forward_wrapping:
+            setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper.base_module)
 
     def disable_wrapper(self):
         if self.is_wrapping:
@@ -242,12 +246,14 @@ class LayersWrapper(ModuleWrapper):
         return any(layer_wrapper.is_wrapping for layer_wrapper in self._layer_wrappers)
 
     def enable_wrapper(self):
-        for layer_wrapper in self._layer_wrappers:
-            layer_wrapper.enable_wrapper()
+        if not self._is_wrapping:
+            for layer_wrapper in self._layer_wrappers:
+                layer_wrapper.enable_wrapper()
 
     def disable_wrapper(self):
-        for layer_wrapper in self._layer_wrappers:
-            layer_wrapper.disable_wrapper()
+        if self.is_wrapping:
+            for layer_wrapper in self._layer_wrappers:
+                layer_wrapper.disable_wrapper()
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError()
@@ -315,7 +321,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         self.base_model.save_pretrained(*args, **kwargs)
 
     @property
-    def base_model(self) -> nn.Module:
+    def base_model(self) -> PreTrainedModel:
         logger.warning(f'The returned base {self._model_name} may be modified.')
         self.disable_wrapper()
         return self._model
@@ -360,11 +366,13 @@ class TransformerWrapper(PreTrainedModelWrapper):
         return self.is_embedding_wrapping or self.are_layers_wrapping  # TODO Decide for 'or' or 'and'
 
     def enable_embedding_wrapper(self):
-        setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper)
+        if not self.is_embedding_wrapping:
+            setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper)
 
     def enable_layers_wrapper(self):
-        self.layers_wrapper.enable_wrapper()
-        setattr(self.base_model, self._layers_attr.value, self.layers_wrapper)
+        if not self.are_layers_wrapping:
+            self.layers_wrapper.enable_wrapper()
+            setattr(self.base_model, self._layers_attr.value, self.layers_wrapper)
 
     def enable_wrapper(self):
         if not self.is_wrapping:
@@ -372,11 +380,13 @@ class TransformerWrapper(PreTrainedModelWrapper):
             self.enable_feed_forward_wrapper()
 
     def disable_embedding_wrapper(self):
-        setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper.base_module)
+        if self.is_embedding_wrapping:
+            setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper.base_module)
 
     def disable_layers_wrapper(self):
-        self.layers_wrapper.disable_wrapper()
-        setattr(self.base_model, self._layers_attr.value, self.layers_wrapper.base_module)
+        if self.are_layers_wrapping:
+            self.layers_wrapper.disable_wrapper()
+            setattr(self.base_model, self._layers_attr.value, self.layers_wrapper.base_module)
 
     def disable_wrapper(self):
         if self.is_wrapping:
@@ -394,7 +404,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def embedding(self):
-        return getattr(self.base_model, self._embedding_attr.value)
+        return self.embedding_wrapper.base_module
 
     @property
     def embedding_wrapper(self):
@@ -402,7 +412,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def layers(self):
-        return getattr(self.base_model, self._layers_attr.value)
+        return self.layers_wrapper.base_module
 
     @property
     def layers_wrapper(self):
@@ -419,6 +429,8 @@ class TransformerWrapper(PreTrainedModelWrapper):
     @property
     def gradient_checkpointing(self):
         return self._model.gradient_checkpointing
+
+    # TODO finire
 
     def preprocess_wrapper_params(self, **kwargs) -> Dict:
         raise NotImplementedError()
@@ -831,58 +843,71 @@ class LMHeadWrapper(ModuleWrapper):
     
 
 class CausalLMWrapper(PreTrainedModelWrapper):
-    _auto_model_dtype: Type[PreTrainedModel] = AutoModelForCausalLM
-    _wrapper_class: Type[PreTrainedModelWrapper] = PreTrainedModelWrapper
+    _model_name: str = 'causal language model'
+
+    _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
+
+    _transformer_dtype: Type[ModuleWrapper] = TransformerWrapper
+    _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        #
-        self._lm_transformer_attr: LMTransformerAttr = self._get_lm_transformer_attr()
-        self._wrapper = self._wrapper_class(
-            getattr(self._model, self._lm_transformer_attr.value), self._tokenizer
+        # Attribute names
+        self._transformer_attr: LMTransformerAttr = self._get_transformer_attr()
+        self._lm_head_attr: LMHeadAttr = self._get_lm_head_attr()
+        # Wrappers
+        self._transformer_wrapper: TransformerWrapper = self._transformer_dtype(
+            getattr(self._model, self._transformer_attr.value)
         )
+        self._lm_head_wrapper: LMHeadWrapper = self._lm_head_dtype(getattr(self._model, self._lm_head_attr.value))
 
-    def _get_lm_transformer_attr(self) -> LMTransformerAttr:
+    def _get_transformer_attr(self) -> LMTransformerAttr:
         return _get_module_attr_name(self._model, LMTransformerAttr)
 
-    def save_pretrained(self, *args, **kwargs):
-        with warnings.catch_warnings():
-            warnings.simplefilter('ignore')
-            self.base_model.save_pretrained(*args, **kwargs)
+    def _get_lm_head_attr(self) -> LMHeadAttr:
+        return _get_module_attr_name(self._model, LMHeadAttr)
 
     @property
-    def base_model(self) -> PreTrainedModel:
-        logger.warning('The returned base model may be modified.')
-        self.disable_wrapper()
-        return self._model
+    def is_transformer_wrapping(self):
+        return isinstance(getattr(self.base_model, self._transformer_attr.value), self._transformer_dtype)
 
     @property
-    def model(self) -> PreTrainedModel:
-        return self._wrapper.base_model
-
-    @property
-    def lm_head(self) -> nn.Linear:
-        return self._model.lm_head
-
-    @property
-    def wrapper(self) -> PreTrainedModelWrapper:
-        return self._wrapper
+    def is_lm_head_wrapping(self):
+        return isinstance(getattr(self.base_model, self._lm_head_attr.value), self._lm_head_dtype)
 
     @property
     def is_wrapping(self):
-        return isinstance(getattr(self._model, self._lm_transformer_attr.value), self._wrapper_class)
+        return self.is_transformer_wrapping or self.is_lm_head_wrapping
+
+    def enable_transformer_wrapper(self):
+        if not self.is_transformer_wrapping:
+            self.transformer_wrapper.enable_wrapper()
+            setattr(self.base_model, self._transformer_attr.value, self.transformer_wrapper)
+
+    def enable_lm_head_wrapper(self):
+        if not self.is_lm_head_wrapping:
+            setattr(self.base_model, self._lm_head_attr.value, self.lm_head_wrapper)
 
     def enable_wrapper(self):
-        if not self.is_wrapping:
-            setattr(self._model, self._lm_transformer_attr.value, self._wrapper)
+        if not self.is_transformer_wrapping:
+            self.enable_transformer_wrapper()
+            self.enable_lm_head_wrapper()
 
-    def disable_wrapper(self):
-        if self.is_wrapping:
-            setattr(self._model, self._lm_transformer_attr.value, self._wrapper.base_model)
+    @property
+    def transformer(self) -> PreTrainedModel:
+        return self._transformer_wrapper.base_model
 
-    def forward(self, *args, **kwargs):
-        self.enable_wrapper()
-        return self._model.forward(*args, **kwargs)
+    @property
+    def transformer_wrapper(self):
+        return self._transformer_wrapper
+
+    @property
+    def lm_head(self) -> nn.Module:
+        return self._lm_head_wrapper.base_module
+
+    @property
+    def lm_head_wrapper(self):
+        return self._lm_head_wrapper
 
     def _update_wrapper_attributes(self, **kwargs) -> Dict:
         old_attributes = dict()
@@ -893,6 +918,6 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()
-        return self._model.prepare_inputs_for_generation(*args, **kwargs)
+        return self.base_model.prepare_inputs_for_generation(*args, **kwargs)
 
     # TODO implement other PreTrainedModel methods
