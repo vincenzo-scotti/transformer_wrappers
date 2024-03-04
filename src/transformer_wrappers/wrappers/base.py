@@ -6,16 +6,25 @@ from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GPT2Model, LlamaModel, MistralModel
+from transformers.models.llama.modeling_llama import LlamaDecoderLayer
+from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions
+from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa, _prepare_4d_causal_attention_mask
 )
 from transformers import logging
+
+from .constants import *
+
+# TODO implement gradient checkpointing
+# TODO implement training with adapters
 
 
 __all__ = [
@@ -23,7 +32,7 @@ __all__ = [
     'AttentionWrapper',
     'FeedForwardWrapper',
     'LayerWrapper',
-    # 'LayersWrapper',  # TODO
+    'LayersWrapper',
     'TransformerWrapper',
     'CausalLMWrapper'
 ]
@@ -102,13 +111,24 @@ class BaseWrapper:
     def disable_wrapper(self):
         pass
 
+    def _pre_process_input(self, *args, **kwargs):
+        return kwargs
+
+    def _wrapped_forward(self, **kwargs):
+        raise NotImplementedError()
+
+    def _post_process_output(self, **kwargs):
+        return kwargs
+
 
 class ModuleWrapper(nn.Module, BaseWrapper):
     _module_name: str = 'module'
+    module_output: str = 'module_output'
     module_attr: Optional[Type[AttrEnumTypes]] = None
 
-    def __init__(self, module: nn.Module):
+    def __init__(self, module: nn.Module, super_wrapper: Optional[BaseWrapper] = None):
         self._module: nn.Module = module
+        self._super_wrapper: Optional[BaseWrapper] = super_wrapper
         super().__init__()
 
     @property
@@ -117,31 +137,155 @@ class ModuleWrapper(nn.Module, BaseWrapper):
         self.disable_wrapper()
         return self._module
 
-    def forward(self, *args, **kwargs):
+    @property
+    def super_wrapper(self) -> BaseWrapper:
+        return self._super_wrapper
+
+    def _wrapped_forward(self, **kwargs):
+        # Model forward
+        module_output = self.base_module.forward(**kwargs)
+        # Extend input with module output
+        output = kwargs | {self.module_output: module_output}
+
+        return output
+
+    def _post_process_output(self, base_model_output: bool = False, **kwargs):
+        if base_model_output:
+            return kwargs[self.module_output]
+        else:
+            return kwargs
+
+    def forward(self, *args, base_model_output: bool = False, **kwargs):
         self.enable_wrapper()
-        return self.module.forward(*args, **kwargs)
+        # Pre-process input
+        kwargs = self._pre_process_input(*args, **kwargs)
+        # Apply layer transformation
+        output = self._wrapped_forward(**kwargs)
+        # Post-process output
+        output = self._post_process_output(base_model_output=base_model_output, **output)
+
+        return output
 
 
 class EmbeddingWrapper(ModuleWrapper):
     _module_name: str = 'embedding module'
+    module_output: str = 'embedding_output'
     module_attr = TransformerEmbeddingAttr
+
+    def _wrapped_forward(
+            self,
+            input_ids: Optional[torch.LongTensor] = None,
+            input_embeddings: Optional[torch.FloatTensor] = None,
+            **kwargs
+    ):
+        #
+        input_embeddings = input_embeddings if input_embeddings is not None else self.base_module(input_ids)
+        #
+        output = kwargs | {self.module_output: input_embeddings}
+
+        return output
 
 
 class AttentionWrapper(ModuleWrapper):
     _module_name: str = 'attention module'
+    module_output: str = ATTN_OUTPUT
     module_attr = LayerAttentionAttr
+
+    attention_weights: str = CURR_ATTN_WEIGHTS
+    key_value: str = CURR_KEY_VALUE
+
+    def _pre_process_input(self, *args, iteration: Optional[int] = None, **kwargs):
+        #
+        attention_params = {
+            ATTENTION_MASK: kwargs[ATTENTION_MASK],
+            OUTPUT_ATTENTIONS: kwargs[OUTPUT_ATTENTIONS],
+            USE_CACHE: kwargs[USE_CACHE]
+        }
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2Model):
+            attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUE][iteration]}
+        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaModel, MistralModel)):
+            attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUE]}
+        else:
+            raise NotImplementedError(
+                f'Unsupported model type: `{type(self.super_wrapper.super_wrapper.super_wrapper.base_model)}`.'
+            )
+        #
+        kwargs |= {ATTN_PARAMS: attention_params}
+
+        return kwargs
+
+    def _wrapped_forward(
+            self,
+            current_hidden_state: Optional[torch.FloatTensor] = None,
+            attention_params: Optional[Dict] = None,
+            **kwargs
+    ):
+        if current_hidden_state is None:
+            raise ValueError()
+        if attention_params is None:
+            raise ValueError()
+        #
+        attn_output = self.base_module(current_hidden_state, **attention_params)
+        #
+        output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
+
+        return output
+
+    def _post_process_output(
+            self,
+            base_model_output: bool = False,
+            output_attentions: bool = False,  # Output attention weights
+            **kwargs
+    ):
+        #
+        if base_model_output:
+            #
+            return kwargs[self.module_output]
+        else:
+            #
+            module_output = kwargs.pop(self.module_output)
+            if len(module_output) == 3:
+                output = dict(zip((self.module_output, self.attention_weights, self.key_value), module_output))
+            elif len(kwargs[self.module_output]) == 2:
+                if output_attentions:
+                    output = dict(zip((self.module_output, self.attention_weights), module_output))
+                else:
+                    output = dict(zip((self.module_output, self.key_value), module_output))
+            elif len(kwargs[self.module_output]) == 1:
+                output = {dict(zip((self.module_output,), module_output))}
+            else:
+                raise ValueError()
+            #
+            kwargs |= {self.module_output: output, OUTPUT_ATTENTIONS: output_attentions}
+
+            return kwargs
 
 
 class FeedForwardWrapper(ModuleWrapper):
     _module_name: str = 'feed forward module'
+    module_output: str = FFNN_OUTPUT
     module_attr = LayerFeedForwardAttr
+
+    def _wrapped_forward(self, current_hidden_state: Optional[torch.FloatTensor], **kwargs):
+        if current_hidden_state is None:
+            raise ValueError()
+        #
+        ffnn_output = self.base_module(current_hidden_state)
+        #
+        output = kwargs | {self.module_output: ffnn_output, CURR_HIDDEN_STATE: current_hidden_state}
+
+        return output
 
 
 class LayerWrapper(ModuleWrapper):
     _module_name: str = 'layer module'
+    module_output: str = 'layer_output'
 
     _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
     _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
+
+    attention_outputs: str = 'attention_outputs'
+    feed_forward_outputs: str = 'feed_forward_outputs'
 
     def __init__(self, layer: nn.Module):
         super().__init__(layer)
@@ -228,9 +372,88 @@ class LayerWrapper(ModuleWrapper):
     def feed_forward_wrapper(self):
         return self._feed_forward_wrapper
 
+    def _wrapped_forward(
+            self,
+            current_hidden_state: Optional[torch.tensor] = None,
+            **kwargs
+    ):
+        if current_hidden_state is None:
+            raise ValueError()  # TODO add message
+        #
+        residual = current_hidden_state
+        # Initial Normalisation
+        current_hidden_state = self.initial_norm(current_hidden_state)
+        # Self attention
+        attention_output = self.attention_wrapper.forward(
+            current_hidden_state=current_hidden_state, **kwargs
+        ).pop(self.attention_wrapper.module_output)
+        current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
+        # Intermediate Normalisation
+        current_hidden_state = self.intermediate_norm(current_hidden_state)
+        # Feed-Forward
+        ffnn_output = self.feed_forward_wrapper.forward(
+            current_hidden_state=current_hidden_state, **kwargs
+        ).pop(self.feed_forward_wrapper.module_output)
+        current_hidden_state = ffnn_output + residual  # TODO verify this
+        # Extend input with module output
+        output = kwargs | {
+            self.module_output: current_hidden_state,
+            self.attention_wrapper.module_output: attention_output,
+            self.feed_forward_wrapper.module_output: ffnn_output
+        }
+
+        return output
+
+    def _post_process_output(
+            self,
+            base_model_output: bool = False,
+            use_cache: bool = False,
+            output_attentions: bool = False,  # Output attention weights
+            return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_output: bool = False,
+            **kwargs
+    ):
+        layer_output = kwargs.pop(self.module_output)
+        attention_output = kwargs.pop(self.attention_wrapper.module_output)
+        feed_forward_output = kwargs.pop(self.feed_forward_wrapper.module_output)
+        if base_model_output:
+            if output_attentions and use_cache:
+                return (
+                    layer_output,
+                    attention_output[self.attention_wrapper.attention_weights],
+                    attention_output[self.attention_wrapper.key_value]
+                )
+            elif output_attentions:
+                return layer_output, attention_output[self.attention_wrapper.attention_weights]
+            elif use_cache:
+                return layer_output, attention_output[self.attention_wrapper.key_value]
+            else:
+                return layer_output,
+        else:
+            output = {CURR_HIDDEN_STATE: layer_output}
+            if output_attentions:
+                output[CURR_ATTN_WEIGHTS] = attention_output[self.attention_wrapper.attention_weights]
+            if use_cache:
+                output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
+            if return_attention_output:
+                output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
+            if return_feed_forward_output:
+                output[FFNN_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.module_output]
+
+            kwargs |= {
+                self.module_output: output,
+                USE_CACHE: use_cache,
+                OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
+                RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+                RETURN_FFNN_OUTPUT: return_feed_forward_output
+            }
+
+            return kwargs
+
 
 class LayersWrapper(ModuleWrapper):
     _module_name: str = 'layer modules'
+    module_output: str = 'layers_output'
 
     _layer_dtype: Type[ModuleWrapper] = LayerWrapper
 
@@ -239,7 +462,9 @@ class LayersWrapper(ModuleWrapper):
         # Wrappers
         if not isinstance(self._module, nn.ModuleList):
             raise TypeError('Layers must be encapsulated in a `ModuleList` object')
-        self._layer_wrappers: nn.ModuleList = nn.ModuleList(self._layer_dtype(layer) for layer in self._module)
+        self._layer_wrappers: nn.ModuleList = nn.ModuleList(
+            self._layer_dtype(layer, super_wrapper=self) for layer in self._module
+        )
 
     @property
     def is_wrapping(self) -> bool:
@@ -255,9 +480,6 @@ class LayersWrapper(ModuleWrapper):
             for layer_wrapper in self._layer_wrappers:
                 layer_wrapper.disable_wrapper()
 
-    def forward(self, *args, **kwargs):
-        raise NotImplementedError()
-
     @property
     def layers(self):
         return self.base_module
@@ -266,12 +488,185 @@ class LayersWrapper(ModuleWrapper):
     def layer_wrappers(self):
         return self._layer_wrappers
 
+    @property
+    def layers_iterator(self):
+        return self.base_module
+
+    @property
+    def layers_wrapper_iterator(self) -> Iterable:
+        return self.layer_wrappers
+
+    def _use_dynamic_cache(self) -> bool:
+        return all(isinstance(layer, (LlamaDecoderLayer, MistralDecoderLayer)) for layer in self.layers_iterator)
+
+    def _init_state(
+            self,
+            embeddings: torch.FloatTensor,
+            use_cache: bool = False,
+            output_attentions: bool = False,  # Output attention weights
+            output_hidden_states: bool = False,
+            return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_output: bool = False,
+            **kwargs
+    ):
+        # Current hidden state
+        kwargs[CURR_HIDDEN_STATE] = embeddings
+        # Hidden states
+        if output_hidden_states:
+            kwargs[HIDDEN_STATES] = [embeddings]
+        # Attention weights
+        if output_attentions:
+            kwargs[ATTN_WEIGHTS] = list()
+        # Cache
+        if use_cache:
+            kwargs[CACHE] = None if self._use_dynamic_cache() else list()
+        # Attention output
+        if return_attention_output:
+            kwargs[ATTN_OUTPUTS] = list()
+        # FFNN output
+        if return_feed_forward_output:
+            kwargs[FFNN_OUTPUTS] = list()
+
+        kwargs |= {
+            USE_CACHE: use_cache,
+            OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
+            OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+            RETURN_FFNN_OUTPUT: return_feed_forward_output
+        }
+
+        return kwargs
+
+    def _update_state(
+            self,
+            use_cache: bool = False,
+            output_attentions: bool = False,  # Output attention weights
+            output_hidden_states: bool = False,
+            return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_output: bool = False,
+            **kwargs
+    ):
+        layer_output = kwargs.pop(self._layer_dtype.module_output)
+        # Current hidden state
+        kwargs[CURR_HIDDEN_STATE] = layer_output[CURR_HIDDEN_STATE]
+        # Hidden states
+        if output_hidden_states:
+            kwargs[HIDDEN_STATES].append(layer_output[CURR_HIDDEN_STATE])
+        # Attention weights
+        if output_attentions:
+            kwargs[ATTN_WEIGHTS].append(layer_output[layer_output[CURR_ATTN_WEIGHTS]])
+        # Cache
+        if use_cache:
+            if isinstance(kwargs[CACHE], DynamicCache):
+                kwargs[CACHE] = layer_output[CURR_KEY_VALUE]
+            else:
+                kwargs[CACHE].append(layer_output[CURR_KEY_VALUE])
+        # Attention output
+        if return_attention_output:
+            kwargs[ATTN_OUTPUTS] = kwargs.get(ATTN_OUTPUTS, list()).append(kwargs.pop(ATTN_OUTPUT))
+        # FFNN output
+        if return_feed_forward_output:
+            kwargs[FFNN_OUTPUTS] = kwargs.get(FFNN_OUTPUTS, list()).append(kwargs.pop(FFNN_OUTPUT))
+
+        kwargs |= {
+            USE_CACHE: use_cache,
+            OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
+            OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+            RETURN_FFNN_OUTPUT: return_feed_forward_output
+        }
+
+        return kwargs
+
+    def _pre_process_input(
+            self, *args, valid_mask: Optional[torch.LongTensor] = None, **kwargs
+    ):
+        #
+        if isinstance(self.super_wrapper.base_model, GPT2Model):
+            if valid_mask is not None:
+                attention_mask = valid_mask.view(kwargs[BATCH_SIZE], -1)
+                attention_mask = attention_mask[:, None, None, :]
+                attention_mask = attention_mask.to(dtype=kwargs[DTYPE])
+                attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+            else:
+                attention_mask = None
+        elif isinstance(self.super_wrapper.base_model, LlamaModel):
+            attention_mask = self.super_wrapper.base_model._update_causal_mask(valid_mask, kwargs[EMBEDDINGS])
+        elif isinstance(self.super_wrapper.base_model, MistralModel):
+            if valid_mask is not None and self.base_model._attn_implementation == 'flash_attention_2' and kwargs:
+                if valid_mask[:, -1].sum().item() != kwargs[BATCH_SIZE]:
+                    raise ValueError('`padding_side=\'right\'` is not with the Flash Attention version of Mistral')
+            if self.super_wrapper.base_model._attn_implementation == 'flash_attention_2':
+                # 2d mask is passed through the layers
+                attention_mask = valid_mask if (valid_mask is not None and 0 in valid_mask) else None
+            elif self.super_wrapper.base_model._attn_implementation == 'sdpa' and not kwargs[OUTPUT_ATTENTIONS]:
+                attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
+                    valid_mask,
+                    (kwargs[BATCH_SIZE], kwargs[SEQ_LENGTH]),
+                    kwargs[EMBEDDINGS],
+                    kwargs[PREFIX_LENGTH],
+                )
+            else:
+                attention_mask = _prepare_4d_causal_attention_mask(
+                    valid_mask,
+                    (kwargs[BATCH_SIZE], kwargs[SEQ_LENGTH]),
+                    kwargs[EMBEDDINGS],
+                    kwargs[PREFIX_LENGTH],
+                    sliding_window=self.super_wrapper.base_model.config.sliding_window,
+                )
+        else:
+            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+        #
+        kwargs |= {ATTENTION_MASK: attention_mask}
+        #
+        kwargs = self._init_state(**kwargs)
+
+        return kwargs
+
+    def _wrapped_forward(self, **kwargs):
+        output = kwargs
+        # Iterate over layers
+        for iteration, layer_wrapper in enumerate(self._layer_wrappers_iterator):
+            # Apply layer transformation
+            output = layer_wrapper.forward(iteration=iteration, **output)
+            # Update model state
+            output = self._update_state(layer_wrapper, **output)
+
+        return output
+
+    def _post_process_output(
+            self, base_model_output: bool = False, current_hidden_state: Optional[torch.FloatTensor] = None, **kwargs
+    ):
+        if current_hidden_state is None:
+            raise ValueError()
+        if base_model_output:
+            #
+            current_hidden_state = kwargs.pop(CURR_HIDDEN_STATE)
+            hidden_states = kwargs.pop(HIDDEN_STATES)
+            attention_weights = kwargs.pop(ATTN_WEIGHTS)
+            cache = kwargs.pop(CACHE)
+            #
+            output = current_hidden_state,
+            if hidden_states:
+                output += hidden_states,
+            if attention_weights:
+                output += attention_weights,
+            if cache:
+                output += cache,
+
+            return output
+        else:
+            kwargs |= {self.module_output: current_hidden_state}
+
+            return kwargs
+
 
 class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     TASK_SPECIFIC_CONFIGS_KEY: str = 'task_specific_params'
     WRAPPER_CONFIGS_KEY: str = 'wrapper'
 
     _model_name: str = 'model'
+    model_output: str = 'model_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = None
 
@@ -330,13 +725,44 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def tokenizer(self) -> PreTrainedTokenizer:
         return self._tokenizer
 
-    def forward(self, *args, **kwargs):
+
+    @property
+    def is_training(self) -> bool:
+        return self.base_model.training
+
+    @property
+    def gradient_checkpointing(self):
+        return self.base_model.gradient_checkpointing
+
+    def _wrapped_forward(self, **kwargs):
+        # Model forward
+        model_output = self.base_model.forward(**kwargs)
+        # Extend input with module output
+        output = kwargs | {self.model_name: model_output}
+
+        return output
+
+    def _post_process_output(self, base_model_output: bool = False, **kwargs):
+        if self.base_model_ouput:
+            return kwargs[self.model_output]
+        else:
+            return kwargs
+
+    def forward(self, *args, base_model_output: bool = False, **kwargs):
         self.enable_wrapper()
-        return self.base_model.forward(*args, **kwargs)
+        # Pre-process input
+        kwargs = self._pre_process_input(*args, **kwargs)
+        # Apply layer transformation
+        output = self._wrapped_forward(**kwargs)
+        # Post-process output
+        output = self._post_process_output(base_model_output=base_model_output, **output)
+
+        return output
 
 
 class TransformerWrapper(PreTrainedModelWrapper):
     _model_name: str = 'transformer model'
+    model_output: str = 'transformer_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModel
 
@@ -351,7 +777,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         self._norm_attr: TransformerNormAttr = self._get_norm_attr()
         # Wrappers
         self._embedding_wrapper = self._embedding_dtype(getattr(self._model, self._embedding_attr.value))
-        self._layers_wrapper = self._layers_dtype(getattr(self._module, self._layers_attr.value))
+        self._layers_wrapper = self._layers_dtype(getattr(self._module, self._layers_attr.value), super_wrapper=self)
 
     @property
     def is_embedding_wrapping(self):
@@ -422,132 +848,20 @@ class TransformerWrapper(PreTrainedModelWrapper):
     def norm(self) -> nn.Module:
         return getattr(self.base_model, self._transformer_norm_attr.value)
 
-    @property
-    def is_training(self) -> bool:
-        return self._model.training
-
-    @property
-    def gradient_checkpointing(self):
-        return self._model.gradient_checkpointing
-
-    # TODO finire
-
-    def preprocess_wrapper_params(self, **kwargs) -> Dict:
-        raise NotImplementedError()
-
-    def _model_specific_preprocessing(
-            self,
-            input_embeddings: torch.FloatTensor,
-            position_ids: Optional[torch.LongTensor],
-            valid_mask: torch.Tensor,
-            past_key_values: Optional[
-                Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]
-            ],
-            batch_size: int,
-            seq_length: int,
-            device: torch.device,
-            dtype,
-            use_cache: bool,
-            output_attentions: bool
-    ) -> Tuple[
-        torch.FloatTensor,
-        torch.FloatTensor,
-        torch.Tensor,
-        Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]],
-        Optional[Union[DynamicCache, Iterable[Tuple]]],
-        int
-    ]:
-        if isinstance(self.base_model, GPT2Model):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
-            # Cache (past key-values)
-            past_key_values = past_key_values if past_key_values is not None else tuple(
-                [None] * self.config.num_hidden_layers
-            )
-            cache = tuple() if use_cache else None
-            # Position IDs
-            prefix_length = past_key_values[0][0].size(-2) if past_key_values[0] is not None else 0
-            position_ids = position_ids.unsqueeze(0) if position_ids is not None else torch.arange(
-                prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
-            ).unsqueeze(0)
-            # Attention mask
-            if valid_mask is not None:
-                attention_mask = valid_mask.view(batch_size, -1)
-                attention_mask = attention_mask[:, None, None, :]
-                attention_mask = attention_mask.to(dtype=dtype)
-                attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
-            else:
-                attention_mask = None
-            # Hidden states
-            hidden_states = input_embeddings + self.base_model.wpe(position_ids)
-            hidden_states = self.base_model.drop(hidden_states)
-        elif isinstance(self.base_model, LlamaModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
-            # Cache (past key-values)
-            if past_key_values is not None and not isinstance(past_key_values, Cache):
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            cache = None
-            # Position IDs
-            prefix_length = past_key_values.get_usable_length(seq_length)
-            # Attention mask
-            attention_mask = self._update_causal_mask(valid_mask, input_embeddings)
-            # Hidden states
-            hidden_states = input_embeddings
-        elif isinstance(self.base_model, MistralModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
-            # Cache (past key-values)
-            if not isinstance(past_key_values, DynamicCache):
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            cache = None
-            # Position IDs
-            prefix_length = past_key_values.get_usable_length(seq_length)
-            position_ids = position_ids.view(-1, seq_length).long() if position_ids is not None else torch.arange(
-                prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
-            ).unsqueeze(0).view(-1, seq_length)
-            # Attention mask
-            if valid_mask is not None and self.base_model._attn_implementation == 'flash_attention_2' and use_cache:
-                if valid_mask[:, -1].sum().item() != batch_size:
-                    raise ValueError('`padding_side=\'right\'` is not with the Flash Attention version of Mistral')
-            if self._attn_implementation == 'flash_attention_2':
-                # 2d mask is passed through the layers
-                attention_mask = valid_mask if (valid_mask is not None and 0 in valid_mask) else None
-            elif self._attn_implementation == 'sdpa' and not output_attentions:
-                attention_mask = _prepare_4d_causal_attention_mask_for_sdpa(
-                    valid_mask,
-                    (batch_size, seq_length),
-                    input_embeddings,
-                    prefix_length,
-                )
-            else:
-                attention_mask = _prepare_4d_causal_attention_mask(
-                    valid_mask,
-                    (batch_size, seq_length),
-                    input_embeddings,
-                    prefix_length,
-                    sliding_window=self.config.sliding_window,
-                )
-            # Hidden states
-            hidden_states = input_embeddings
-        else:
-            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
-
-        return hidden_states, attention_mask, position_ids, past_key_values, cache, prefix_length
-
-    # NOTE I assumed there are no masked positions inside the single sequences
     def _pre_process_input(
             self,
-            input_ids: Optional[torch.LongTensor],
-            input_embeddings: Optional[torch.FloatTensor],
-            position_ids: Optional[torch.LongTensor],
-            past_key_values: Optional[
-                Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]
-            ],
-            valid_mask: Optional[torch.Tensor],
-            use_cache: Optional[bool],
-            output_attentions: Optional[bool],
-            output_hidden_states: Optional[bool],
-            return_dict: Optional[bool],
+            *args,
+            input_ids: Optional[torch.LongTensor] = None,
+            input_embeds: Optional[torch.FloatTensor] = None,
+            attention_mask: Optional[torch.Tensor] = None,
+            position_ids: Optional[torch.LongTensor] = None,
+            past_key_values: Optional[Union[DynamicCache, List[Tuple[torch.FloatTensor, torch.FloatTensor]]]] = None,
+            use_cache: Optional[bool] = None,
+            output_attentions: Optional[bool] = None,
+            output_hidden_states: Optional[bool] = None,
+            return_dict: Optional[bool] = None,
+            **kwargs
     ):
-        # TODO expand supported models (e.g., GPT-2 and BERT use token types and can have other inputs)
         #
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -555,300 +869,173 @@ class TransformerWrapper(PreTrainedModelWrapper):
         )
         use_cache = use_cache if use_cache is not None else self.config.use_cache
         if self.gradient_checkpointing and self.is_training and use_cache:
-            logger.warning('`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`.')
+            logger.warning(
+                '`use_cache=True` is incompatible with gradient checkpointing. '
+                'Setting `use_cache = False` and `past_key_values = None`.'
+            )
             use_cache = False
+            past_key_values = None
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         #
-        if (input_ids is None) ^ (input_embeddings is not None):
+        dtype = self.base_model.dtype
+        # Input
+        if (input_ids is None) ^ (input_embeds is not None):
             raise ValueError('Models accept either `input_ids` or `inputs_embeds`, not both.')
         elif input_ids is not None:
             batch_size, seq_length = input_ids.size()
             device: torch.device = input_ids.device
-        elif input_embeddings is not None:
-            batch_size, seq_length, _ = input_embeddings.size()
+        elif input_embeds is not None:
+            batch_size, seq_length, _ = input_embeds.size()
             device: torch.device = input_ids.device
         else:
             raise ValueError('One between `input_ids` or `inputs_embeds` must be specified.')
-        dtype = self.base_model.dtype
-        input_embeddings = input_embeddings if input_embeddings is not None else self.embedding(input_ids)
-        # Model-specific preprocessing
-        (
-            hidden_states, attention_mask, position_ids, past_key_values, cache, prefix_length
-        ) = self._model_specific_preprocessing(
-            input_embeddings, position_ids, valid_mask, past_key_values,
-            batch_size, seq_length, device, dtype, use_cache, output_attentions
-        )
+        # Cache
+        if past_key_values is None:
+            if isinstance(self.base_model, GPT2Model):
+                past_key_values = [None] * self.config.num_hidden_layers
+            elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+            else:
+                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+            prefix_length = 0
+        else:
+            if isinstance(self.base_model, GPT2Model) and all(pkv is not None for pkv in past_key_values):
+                prefix_length = past_key_values[0][0].size(-2)
+            elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                if not isinstance(past_key_values, Cache):
+                    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+                prefix_length = past_key_values.get_usable_length(seq_length)
+            else:
+                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+        # Positions
+        if position_ids is not None:
+            if isinstance(self.base_model, (GPT2Model, LlamaModel)):
+                position_ids = position_ids.unsqueeze(0)
+            elif isinstance(self.base_model, MistralModel):
+                position_ids = position_ids.view(-1, seq_length).long()
+            else:
+                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+        else:
+            if isinstance(self.base_model, (GPT2Model, LlamaModel)):
+                position_ids = torch.arange(
+                    prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
+                ).unsqueeze(0)
+            elif isinstance(self.base_model, MistralModel):
+                position_ids = torch.arange(
+                    prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
+                ).unsqueeze(0).view(-1, seq_length)
+            else:
+                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         #
-        self_attentions_stack: Optional[Tuple] = tuple() if output_attentions else None
-        hidden_states_stack: Optional[Tuple[torch.FloatTensor]] = (hidden_states,) if output_hidden_states else None
-
-        return (
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-            batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict
-        )
-
-    def _model_specific_layer_inputs(
-            self,
-            idx, layer,
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-            batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict,
-            **kwargs
-    ) -> Tuple[Tuple, Dict]:
-        #
-        args = (hidden_states, )
-        kwargs = dict() if self.gradient_checkpointing and self.is_training else {
-            'attention_mask': attention_mask,
-            'output_attentions': output_attentions,
-            'use_cache': use_cache
+        kwargs |= {
+            INPUT_IDS: input_ids,
+            EMBEDDINGS: input_embeds,
+            VALID_MASK: attention_mask,
+            POSITIONS_IDS: position_ids,
+            PAST_KEY_VALUE: past_key_values,
+            USE_CACHE: use_cache,
+            OUTPUT_ATTENTIONS: output_attentions,
+            OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_DICT: return_dict,
+            BATCH_SIZE: batch_size,
+            PREFIX_LENGTH: prefix_length,
+            SEQ_LENGTH: seq_length,
+            DTYPE: dtype,
+            DEVICE: device
         }
-        #
-        if isinstance(self.base_model, GPT2Model):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
-            if self.gradient_checkpointing and self.is_training:
-                args += (
-                    None,
-                    attention_mask,
-                    None,
-                    None,
-                    None,
-                    use_cache,
-                    output_attentions,
-                )
-            else:
-                kwargs |= {'layer_past': past_key_values[idx]}  # TODO check this in presence of multiple iterations
-        elif isinstance(self.base_model, LlamaModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
-            if self.gradient_checkpointing and self.is_training:
-                args += (
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    use_cache,
-                )
-            else:
-                kwargs |= {'past_key_value': past_key_values}
-        elif isinstance(self.base_model, MistralModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
-            if self.gradient_checkpointing and self.is_training:
-                args += (
-                    attention_mask,
-                    position_ids,
-                    past_key_values,
-                    output_attentions,
-                    use_cache
-                )
-            else:
-                kwargs |= {'past_key_value': past_key_values}
-        else:
-            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
 
-        return args, kwargs
+        return kwargs
 
-    def _update_state(
-            self,
-            layer_output,
-            hidden_states_stack,
-            self_attentions_stack,
-            cache,
-            use_cache: bool,
-            output_attentions: bool,
-            output_hidden_states: bool
+    def _wrapped_forward(self, **kwargs):
+        # Embed input
+        output = self.embedding_wrapper.forward(**kwargs)
+        # Process embeddings with transformer layers
+        output = self.layers_wrapper.forward(**output)
+        # Apply last normalisation
+        output_hidden_state = self.norm(output.pop(self.layers_wrapper.module_output))
+        # Extend output with normalised last hidden state
+        output |= {self.model_output: output_hidden_state}
 
-    ) -> Tuple[
-        torch.FloatTensor,
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]]
-    ]:
-        cache_update = self_attentions = None
-        if use_cache and output_attentions:
-            hidden_states, cache_update, self_attentions, *_ = layer_output
-        elif use_cache:
-            hidden_states, cache_update, *_ = layer_output
-        elif output_attentions:
-            hidden_states, self_attentions, *_ = layer_output
-        else:
-            hidden_states, *_ = layer_output
-        #
-        if use_cache is True:
-            if isinstance(cache, DynamicCache):
-                cache = cache_update
-            else:
-                cache += (cache_update,)
-        #
-        if output_hidden_states:
-            hidden_states_stack += (hidden_states,)
-        #
-        if output_attentions:
-            self_attentions_stack += (self_attentions,)
-
-        return hidden_states, hidden_states_stack, self_attentions_stack, cache
-
-    def _layer_wrapped_forward(
-            self,
-            idx: int, layer: nn.Module,
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-            batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict,
-            **kwargs
-    ) -> Tuple[
-        torch.FloatTensor,
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]]
-    ]:
-        input_args, input_kwargs = self._model_specific_layer_inputs(
-            idx, layer,
-            hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-            batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict,
-            ** kwargs
-        )
-        if self.gradient_checkpointing and self.is_training:
-            layer_outputs = self.base_model._gradient_checkpointing_func(layer.__call__, *input_args, **input_kwargs)
-        else:
-            layer_outputs = layer(*input_args, **input_kwargs)
-
-        hidden_states, hidden_states_stack, self_attentions_stack, cache = self._update_state(
-            layer_outputs,
-            hidden_states_stack, self_attentions_stack, cache,
-            use_cache, output_attentions, output_hidden_states
-        )
-
-        return hidden_states, hidden_states_stack, self_attentions_stack, cache
-
-    def _layers_iterator(self, *args, **kwargs) -> Iterable:
-        return self.layers
-
-    def _wrapped_forward(
-            self, hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-            batch_size, seq_length, prefix_length, device,
-            input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict, **kwargs
-    ) -> Tuple[
-        torch.FloatTensor,
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Iterable[torch.FloatTensor]],
-        Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]]
-    ]:
-        for idx, layer in enumerate(self._layers_iterator(**kwargs)):
-            hidden_states, hidden_states_stack, self_attentions_stack, cache = self._layer_wrapped_forward(
-                idx, layer,
-                hidden_states, attention_mask, self_attentions_stack, hidden_states_stack, cache,
-                batch_size, seq_length, prefix_length, device,
-                input_ids, input_embeddings, position_ids, past_key_values, valid_mask,
-                use_cache, output_attentions, output_hidden_states, return_dict,
-                **kwargs
-            )
-
-        # Apply final normalisation
-        hidden_states = self.norm(hidden_states)
-
-        return hidden_states, hidden_states_stack, self_attentions_stack, cache
-
-    def _model_specific_postprocessing(
-            self,
-            hidden_states: torch.FloatTensor,
-            hidden_states_stack: Optional[Iterable[torch.FloatTensor]],
-            self_attentions_stack: Optional[Iterable[torch.FloatTensor]],
-            cache: Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]],
-    ) -> Union[BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions]:
-        #
-        if isinstance(self.base_model, GPT2Model):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/gpt2/modeling_gpt2.py
-            return BaseModelOutputWithPastAndCrossAttentions(
-                last_hidden_state=hidden_states,
-                past_key_values=cache,
-                hidden_states=hidden_states_stack,
-                attentions=self_attentions_stack
-            )
-        elif isinstance(self.base_model, LlamaModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py
-            return BaseModelOutputWithPast(
-                last_hidden_state=hidden_states,
-                past_key_values=cache,
-                hidden_states=hidden_states_stack,
-                attentions=self_attentions_stack
-            )
-        elif isinstance(self.base_model, MistralModel):
-            # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mistral/modeling_mistral.py
-            return BaseModelOutputWithPast(
-                last_hidden_state=hidden_states,
-                past_key_values=cache,
-                hidden_states=hidden_states_stack,
-                attentions=self_attentions_stack
-            )
-        else:
-            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+        return output
 
     def _post_process_output(
             self,
-            hidden_states: torch.FloatTensor,
-            hidden_states_stack: Optional[Iterable[torch.FloatTensor]],
-            self_attentions_stack: Optional[Iterable[torch.FloatTensor]],
-            cache: Optional[Union[DynamicCache, Iterable[Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]]],
-            return_dict: Optional[bool],
-    ) -> Union[BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions, Tuple]:
+            base_model_output: bool = False,
+            cache: Optional[Union[DynamicCache, List[Tuple[torch.FloatTensor, torch.FloatTensor]]]] = None,
+            hidden_states: Optional[List[torch.FloatTensor]] = None,
+            attention_weights: Optional[List[torch.FloatTensor]] = None,
+            return_dict: bool = True,
+            **kwargs
+    ):
         # TODO expand supported models (e.g., GPT-2 uses output with past and cross-attention)
         #
         if cache is not None and isinstance(cache, DynamicCache):
             cache = cache.to_legacy_cache()
-        if self_attentions_stack is not None:
-            logger.warning(
-                'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
-            )
-        #
-        if return_dict:
-            return self._model_specific_postprocessing(hidden_states, hidden_states_stack, self_attentions_stack, cache)
+        if base_model_output:
+            if hidden_states is not None:
+                logger.warning(
+                    'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
+                )
+            if return_dict:
+                if isinstance(self.base_model, GPT2Model):
+                    return BaseModelOutputWithPastAndCrossAttentions(
+                        last_hidden_state=kwargs[self.model_output],
+                        past_key_values=cache,
+                        hidden_states=hidden_states,
+                        attentions=attention_weights
+                    )
+                elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                    return BaseModelOutputWithPast(
+                        last_hidden_state=kwargs[self.model_output],
+                        past_key_values=cache,
+                        hidden_states=hidden_states,
+                        attentions=attention_weights
+                    )
+                else:
+                    raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+            else:
+                return tuple(
+                    v for v in [kwargs[self.model_output], cache, hidden_states, attention_weights] if v is not None
+                )
         else:
-            return tuple(v for v in [hidden_states, cache, hidden_states_stack, self_attentions_stack] if v is not None)
+            output_hidden_state = kwargs.pop(self.model_output)
+            kwargs |= {
+                OUT_HIDDEN_STATE: output_hidden_state,
+                CACHE: cache,
+                HIDDEN_STATES: hidden_states,
+                ATTN_WEIGHTS: attention_weights,
+                RETURN_DICT: return_dict
+            }
 
-    def forward(
-            self,
-            input_ids: Optional[torch.LongTensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-            **kwargs  # As for now, any other additional input is ignored
-    ):
-        # Prepare the input
-        args = self._pre_process_input(
-            input_ids, inputs_embeds, position_ids, past_key_values, attention_mask,
-            use_cache, output_attentions, output_hidden_states, return_dict
-        )
-        # Iterate through the wrapped layers
-        hidden_states, hidden_states_stack, self_attentions_stack, cache = self._wrapped_forward(*args, **kwargs)
+            return kwargs
 
-        return self._post_process_output(
-            hidden_states, hidden_states_stack, self_attentions_stack, cache, return_dict
-        )
-
-        # TODO implement other PreTrainedModel methods
+    # TODO implement other PreTrainedModel methods
 
 
 class LMHeadWrapper(ModuleWrapper):
     module_attr = LMHeadAttr
-    
+
+    def _wrapped_forward(self, output_hidden_state: Optional[torch.tensor] = None, **kwargs):
+        if output_hidden_state is None:
+            raise ValueError()
+        #
+        logits = self.base_model(output_hidden_state)
+        #
+        output = kwargs | {self.module_output: logits, OUT_HIDDEN_STATE: output_hidden_state}
+
+        return output
+
 
 class CausalLMWrapper(PreTrainedModelWrapper):
     _model_name: str = 'causal language model'
+    model_output: str = 'causal_language_model_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
 
     _transformer_dtype: Type[ModuleWrapper] = TransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
+
+    lm_loss: str = 'lm_loss'
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -908,13 +1095,78 @@ class CausalLMWrapper(PreTrainedModelWrapper):
     @property
     def lm_head_wrapper(self):
         return self._lm_head_wrapper
+    
+    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
+        super().gradient_checkpointing_enable()
 
-    def _update_wrapper_attributes(self, **kwargs) -> Dict:
-        old_attributes = dict()
-        for attr, val in kwargs.items():
-            old_attributes[attr] = getattr(self.wrapper, attr)
-            setattr(self.wrapper, attr, val)
-        return old_attributes
+    def _wrapped_forward(self, **kwargs):
+        #
+        output = self.transformer_wrapper.forward(**kwargs)
+        # Apply last normalisation
+        logits = self.lm_head_wrapper.forward(**output)
+        # Extend output with normalised last hidden state
+        output |= {self.model_output: logits}
+
+        return output
+
+    def _post_process_output(
+            self,
+            base_model_output: bool = False,
+            labels: Optional[torch.LongTensor] = None,
+            cache: Optional[List[Tuple[torch.FloatTensor, torch.FloatTensor]]] = None,
+            hidden_states: Optional[List[torch.FloatTensor]] = None,
+            attention_weights: Optional[List[torch.FloatTensor]] = None,
+            return_dict: bool = True,
+            **kwargs
+    ):
+        if base_model_output:
+            if hidden_states is not None:
+                logger.warning(
+                    'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
+                )
+            if return_dict:
+                if isinstance(self.base_model, GPT2Model):
+                    return CausalLMOutputWithCrossAttentions(
+                        loss=kwargs[self.lm_loss],
+                        logits=kwargs[self.model_output],
+                        past_key_values=cache,
+                        hidden_states=hidden_states,
+                        attentions=attention_weights
+                    )
+                elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                    return CausalLMOutputWithPast(
+                        loss=kwargs[self.lm_loss],
+                        logits=kwargs[self.model_output],
+                        past_key_values=cache,
+                        hidden_states=hidden_states,
+                        attentions=attention_weights
+                    )
+                else:
+                    raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+            else:
+                return tuple(
+                    v for v in [
+                        kwargs[self.lm_loss], kwargs[self.model_output], cache, hidden_states, attention_weights
+                    ] if v is not None
+                )
+        else:
+            #
+            logits = kwargs.pop(self.model_output)
+            if labels:
+                shift_logits = logits[..., :-1, :].contiguous().view(-1, self.config.vocab_size)
+                shift_labels = labels[..., 1:].contiguous().view(-1).to(shift_logits.device)
+                loss = F.cross_entropy(shift_logits, shift_labels)
+            else:
+                loss = None
+            #
+            kwargs |= {
+                LOGITS: logits,
+                LOSS: loss,
+                CACHE: cache,
+                HIDDEN_STATES: hidden_states,
+                ATTN_WEIGHTS: attention_weights,
+                RETURN_DICT: return_dict
+            }
 
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()
