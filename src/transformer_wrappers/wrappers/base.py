@@ -24,16 +24,20 @@ from transformers import logging
 from .constants import *
 
 # TODO fix base model/module properties and wrapper enable/disable methods
+# TODO implement output container (for generate)
 # TODO implement gradient checkpointing
 # TODO implement training with adapters
 
 
 __all__ = [
+    'ModuleWrapper',
+    'PreTrainedModelWrapper',
     'EmbeddingWrapper',
     'AttentionWrapper',
     'FeedForwardWrapper',
     'LayerWrapper',
     'LayersWrapper',
+    'LMHeadWrapper',
     'TransformerWrapper',
     'CausalLMWrapper'
 ]
@@ -1067,7 +1071,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
 
-    _transformer_dtype: Type[ModuleWrapper] = TransformerWrapper
+    _transformer_dtype: Type[PreTrainedModelWrapper] = TransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
 
     lm_loss: str = 'lm_loss'
