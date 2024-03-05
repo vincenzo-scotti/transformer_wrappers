@@ -6,6 +6,8 @@ from transformer_wrappers.wrappers import TransformerWrapper, CausalLMWrapper
 
 
 class TestTransformerWrapper(unittest.TestCase):
+    transformer_wrapper = TransformerWrapper
+
     def test_gpt2_forward(self):
         transformer = 'gpt2'
         input_string = 'Hello, World!\n'
@@ -21,7 +23,7 @@ class TestTransformerWrapper(unittest.TestCase):
             output_hidden_states=True
         )
 
-        model = TransformerWrapper.from_pretrained(transformer)
+        model = self.transformer_wrapper.from_pretrained(transformer)
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model(
             **input_encodings,
@@ -92,6 +94,7 @@ class TestTransformerWrapper(unittest.TestCase):
 
 
 class TestCausalLMWrapper(unittest.TestCase):
+    causal_lm_wrapper = CausalLMWrapper
 
     def test_gpt2_forward(self):
         transformer = 'gpt2'
@@ -108,7 +111,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             output_hidden_states=True
         )
 
-        model = CausalLMWrapper.from_pretrained(transformer)
+        model = self.causal_lm_wrapper.from_pretrained(transformer)
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model.forward(
             **input_encodings,
@@ -131,7 +134,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         input_encodings = tokenizer(input_string, return_tensors='pt')
         output = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
-        model = CausalLMWrapper.from_pretrained(transformer)
+        model = self.causal_lm_wrapper.from_pretrained(transformer)
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
