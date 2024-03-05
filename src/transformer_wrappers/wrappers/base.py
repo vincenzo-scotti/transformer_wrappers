@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GPT2Model, LlamaModel, MistralModel
+from transformers import GPT2PreTrainedModel, LlamaModel, MistralModel
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
@@ -198,7 +198,7 @@ class EmbeddingWrapper(ModuleWrapper):
 
     def _post_process_output(self, base_model_output: bool = False, **kwargs):
         embeddings = kwargs.pop(self.module_output)
-        if isinstance(self.super_wrapper.base_model, GPT2Model):
+        if isinstance(self.super_wrapper.base_model, GPT2PreTrainedModel):
             embeddings += self._position_embeddings.forward(kwargs[POSITIONS_IDS])
         if base_model_output:
             return embeddings
@@ -223,7 +223,7 @@ class AttentionWrapper(ModuleWrapper):
             OUTPUT_ATTENTIONS: kwargs[OUTPUT_ATTENTIONS],
             USE_CACHE: kwargs[USE_CACHE]
         }
-        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2Model):
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2PreTrainedModel):
             attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUE][iteration]}
         elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaModel, MistralModel)):
             attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUE]}
@@ -268,12 +268,12 @@ class AttentionWrapper(ModuleWrapper):
             module_output = kwargs.pop(self.module_output)
             if len(module_output) == 3:
                 output = dict(zip((self.module_output, self.key_value, self.attention_weights), module_output))
-            elif len(kwargs[self.module_output]) == 2:
+            elif len(module_output) == 2:
                 if output_attentions:
                     output = dict(zip((self.module_output, self.attention_weights), module_output))
                 else:
                     output = dict(zip((self.module_output, self.key_value), module_output))
-            elif len(kwargs[self.module_output]) == 1:
+            elif len(module_output) == 1:
                 output = {dict(zip((self.module_output,), module_output))}
             else:
                 raise ValueError()
@@ -603,7 +603,7 @@ class LayersWrapper(ModuleWrapper):
             self, *args, valid_mask: Optional[torch.LongTensor] = None, **kwargs
     ):
         #
-        if isinstance(self.super_wrapper.base_model, GPT2Model):
+        if isinstance(self.super_wrapper.base_model, GPT2PreTrainedModel):
             if valid_mask is not None:
                 attention_mask = valid_mask.view(kwargs[BATCH_SIZE], -1)
                 attention_mask = attention_mask[:, None, None, :]
@@ -926,7 +926,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             raise ValueError('One between `input_ids` or `inputs_embeds` must be specified.')
         # Cache
         if past_key_values is None:
-            if isinstance(self.base_model, GPT2Model):
+            if isinstance(self.base_model, GPT2PreTrainedModel):
                 past_key_values = [None] * self.config.num_hidden_layers
             elif isinstance(self.base_model, (LlamaModel, MistralModel)):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
@@ -934,7 +934,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
             prefix_length = 0
         else:
-            if isinstance(self.base_model, GPT2Model) and all(pkv is not None for pkv in past_key_values):
+            if isinstance(self.base_model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
                 prefix_length = past_key_values[0][0].size(-2)
             elif isinstance(self.base_model, (LlamaModel, MistralModel)):
                 if not isinstance(past_key_values, Cache):
@@ -944,14 +944,14 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         # Positions
         if position_ids is not None:
-            if isinstance(self.base_model, (GPT2Model, LlamaModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaModel)):
                 position_ids = position_ids.unsqueeze(0)
             elif isinstance(self.base_model, MistralModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         else:
-            if isinstance(self.base_model, (GPT2Model, LlamaModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)
@@ -1012,7 +1012,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                     'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
                 )
             if return_dict:
-                if isinstance(self.base_model, GPT2Model):
+                if isinstance(self.base_model, GPT2PreTrainedModel):
                     return BaseModelOutputWithPastAndCrossAttentions(
                         last_hidden_state=kwargs[self.model_output],
                         past_key_values=cache,
@@ -1054,7 +1054,7 @@ class LMHeadWrapper(ModuleWrapper):
         if output_hidden_state is None:
             raise ValueError()
         #
-        logits = self.base_model.forward(output_hidden_state)
+        logits = self.base_module.forward(output_hidden_state)
         #
         output = kwargs | {self.module_output: logits, OUT_HIDDEN_STATE: output_hidden_state}
 
@@ -1079,7 +1079,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         self._lm_head_attr: LMHeadAttr = self._get_lm_head_attr()
         # Wrappers
         self._transformer_wrapper: TransformerWrapper = self._transformer_dtype(
-            getattr(self._model, self._transformer_attr.value)
+            getattr(self._model, self._transformer_attr.value), self._tokenizer
         )
         self._lm_head_wrapper: LMHeadWrapper = self._lm_head_dtype(getattr(self._model, self._lm_head_attr.value))
 
@@ -1111,7 +1111,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             setattr(self.base_model, self._lm_head_attr.value, self.lm_head_wrapper)
 
     def enable_wrapper(self):
-        if not self.is_transformer_wrapping:
+        if not self.is_wrapping:
             self.enable_transformer_wrapper()
             self.enable_lm_head_wrapper()
 
@@ -1138,7 +1138,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         #
         output = self.transformer_wrapper.forward(**kwargs)
         # Apply last normalisation
-        logits = self.lm_head_wrapper.forward(**output)
+        logits = self.lm_head_wrapper.forward(**output).pop(self._lm_head_wrapper.module_output)
         # Extend output with normalised last hidden state
         output |= {self.model_output: logits}
 
@@ -1160,9 +1160,9 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                     'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
                 )
             if return_dict:
-                if isinstance(self.base_model, GPT2Model):
+                if isinstance(self.base_model, GPT2PreTrainedModel):
                     return CausalLMOutputWithCrossAttentions(
-                        loss=kwargs[self.lm_loss],
+                        loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
                         past_key_values=cache,
                         hidden_states=hidden_states,
@@ -1170,7 +1170,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                     )
                 elif isinstance(self.base_model, (LlamaModel, MistralModel)):
                     return CausalLMOutputWithPast(
-                        loss=kwargs[self.lm_loss],
+                        loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
                         past_key_values=cache,
                         hidden_states=hidden_states,
@@ -1181,7 +1181,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             else:
                 return tuple(
                     v for v in [
-                        kwargs[self.lm_loss], kwargs[self.model_output], cache, hidden_states, attention_weights
+                        kwargs.get(self.lm_loss), kwargs[self.model_output], cache, hidden_states, attention_weights
                     ] if v is not None
                 )
         else:
@@ -1203,8 +1203,12 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                 RETURN_DICT: return_dict
             }
 
+            return kwargs
+
     def prepare_inputs_for_generation(self, *args, **kwargs):
         self.enable_wrapper()
-        return self.base_model.prepare_inputs_for_generation(*args, **kwargs)
+        inputs = self.base_model.prepare_inputs_for_generation(*args, **kwargs) | {'base_model_output': True}
+
+        return inputs
 
     # TODO implement other PreTrainedModel methods

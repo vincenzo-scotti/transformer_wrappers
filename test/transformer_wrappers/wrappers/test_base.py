@@ -91,7 +91,37 @@ class TestTransformerWrapper(unittest.TestCase):
             ), f'`attentions` tensors at layer {i} not matching.'
 
 
-class TestPreTrainedModelWrapperForCausalLM(unittest.TestCase):
+class TestCausalLMWrapper(unittest.TestCase):
+
+    def test_gpt2_forward(self):
+        transformer = 'gpt2'
+        input_string = 'Hello, World!\n'
+
+        model = AutoModelForCausalLM.from_pretrained(transformer)
+        tokenizer = AutoTokenizer.from_pretrained(transformer)
+        input_encodings = tokenizer(input_string, return_tensors='pt')
+        output = model.forward(
+            **input_encodings,
+            return_dict=True,
+            output_attentions=True,
+            use_cache=True,
+            output_hidden_states=True
+        )
+
+        model = CausalLMWrapper.from_pretrained(transformer)
+        input_encodings = model.tokenizer(input_string, return_tensors='pt')
+        output_wrapper = model.forward(
+            **input_encodings,
+            return_dict=True,
+            output_attentions=True,
+            use_cache=True,
+            output_hidden_states=True,
+            return_attention_output=True,  # Self-attention layer output
+            return_feed_forward_output=True
+        )
+
+        assert torch.equal(output.logits, output_wrapper['logits']), 'Logit tensors do not match.'
+
     def test_gpt2_generate(self):
         transformer = 'gpt2'
         input_string = 'Hello, World!\n'
