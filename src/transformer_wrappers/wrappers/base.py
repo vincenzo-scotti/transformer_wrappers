@@ -220,7 +220,7 @@ class AttentionWrapper(ModuleWrapper):
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
 
-    def _pre_process_input(self, *args, iteration: Optional[int] = None, **kwargs):
+    def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
         attention_params = {
             ATTENTION_MASK: kwargs[ATTENTION_MASK],
@@ -228,7 +228,7 @@ class AttentionWrapper(ModuleWrapper):
             USE_CACHE: kwargs[USE_CACHE]
         }
         if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2PreTrainedModel):
-            attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUE][iteration]}
+            attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUE][layer_idx]}
         elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaModel, MistralModel)):
             attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUE]}
         else:
@@ -470,6 +470,7 @@ class LayerWrapper(ModuleWrapper):
                 RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
                 RETURN_FFNN_OUTPUT: return_feed_forward_output
             }
+            #
 
             return kwargs
 
@@ -515,8 +516,7 @@ class LayersWrapper(ModuleWrapper):
     def layers_iterator(self):
         return self.base_module
 
-    @property
-    def layer_wrappers_iterator(self) -> Iterable:
+    def get_layer_wrappers_iterator(self) -> Iterable:
         return self.layer_wrappers
 
     def _use_dynamic_cache(self) -> bool:
@@ -567,6 +567,7 @@ class LayersWrapper(ModuleWrapper):
             output_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
+            layer_idx: int = -1,
             **kwargs
     ):
         layer_output = kwargs.pop(self._layer_dtype.module_output)
@@ -598,8 +599,6 @@ class LayersWrapper(ModuleWrapper):
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
-
-        kwargs.pop(ITERATION)
 
         return kwargs
 
@@ -643,17 +642,15 @@ class LayersWrapper(ModuleWrapper):
             raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         #
         kwargs |= {ATTENTION_MASK: attention_mask}
-        #
-        kwargs = self._init_state(**kwargs)
 
         return kwargs
 
     def _wrapped_forward(self, **kwargs):
-        output = kwargs
+        output = self._init_state(**kwargs)
         # Iterate over layers
-        for iteration, layer_wrapper in enumerate(self.layer_wrappers_iterator):
+        for layer_idx, layer_wrapper in enumerate(self.get_layer_wrappers_iterator()):
             # Apply layer transformation
-            output = layer_wrapper.forward(iteration=iteration, **output)
+            output = layer_wrapper.forward(layer_idx=layer_idx, **output)
             # Update model state
             output = self._update_state(**output)
 
