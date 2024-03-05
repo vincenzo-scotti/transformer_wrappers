@@ -23,6 +23,7 @@ from transformers import logging
 
 from .constants import *
 
+# TODO fix base model/module properties and wrapper enable/disable methods
 # TODO implement gradient checkpointing
 # TODO implement training with adapters
 
@@ -44,6 +45,10 @@ logger = logging.get_logger(__name__)
 class TransformerEmbeddingAttr(Enum):
     EMBED_TOKENS = 'embed_tokens'
     WTE = 'wte'
+
+
+class TransformerPositionEmbeddingAttr(Enum):
+    WPE = 'wpe'
 
 
 class LayerInitialNormAttr(Enum):
@@ -86,7 +91,7 @@ class LMHeadAttr(Enum):
 
 AttrEnumTypes: Type = Union[
     LayerInitialNormAttr, LayerAttentionAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
-    TransformerEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr, 
+    TransformerEmbeddingAttr, TransformerPositionEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr,
     LMTransformerAttr, LMHeadAttr
 ]
 
@@ -127,14 +132,15 @@ class ModuleWrapper(nn.Module, BaseWrapper):
     module_attr: Optional[Type[AttrEnumTypes]] = None
 
     def __init__(self, module: nn.Module, super_wrapper: Optional[BaseWrapper] = None):
+        super().__init__()
         self._module: nn.Module = module
         self._super_wrapper: Optional[BaseWrapper] = super_wrapper
-        super().__init__()
 
     @property
     def base_module(self) -> nn.Module:
-        logger.warning(f'The returned base {self._module_name} may be modified.')
-        self.disable_wrapper()
+        logger.warning(
+            f'The returned base {self._module_name} may be modified and may have internal wrappers still enabled.'
+        )
         return self._module
 
     @property
@@ -172,6 +178,11 @@ class EmbeddingWrapper(ModuleWrapper):
     module_output: str = 'embedding_output'
     module_attr = TransformerEmbeddingAttr
 
+    def __init__(self, *args, position_embeddings: Optional[nn.Embedding] = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        #
+        self._position_embeddings: Optional[nn.Embedding] = position_embeddings
+
     def _wrapped_forward(
             self,
             input_ids: Optional[torch.LongTensor] = None,
@@ -179,11 +190,22 @@ class EmbeddingWrapper(ModuleWrapper):
             **kwargs
     ):
         #
-        input_embeddings = input_embeddings if input_embeddings is not None else self.base_module(input_ids)
+        input_embeddings = input_embeddings if input_embeddings is not None else self.base_module.forward(input_ids)
         #
         output = kwargs | {self.module_output: input_embeddings}
 
         return output
+
+    def _post_process_output(self, base_model_output: bool = False, **kwargs):
+        embeddings = kwargs.pop(self.module_output)
+        if isinstance(self.super_wrapper.base_model, GPT2Model):
+            embeddings += self._position_embeddings.forward(kwargs[POSITIONS_IDS])
+        if base_model_output:
+            return embeddings
+        else:
+            kwargs |= {EMBEDDINGS: embeddings}
+
+            return kwargs
 
 
 class AttentionWrapper(ModuleWrapper):
@@ -225,7 +247,7 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        attn_output = self.base_module(current_hidden_state, **attention_params)
+        attn_output = self.base_module.forward(current_hidden_state, **attention_params)
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -245,7 +267,7 @@ class AttentionWrapper(ModuleWrapper):
             #
             module_output = kwargs.pop(self.module_output)
             if len(module_output) == 3:
-                output = dict(zip((self.module_output, self.attention_weights, self.key_value), module_output))
+                output = dict(zip((self.module_output, self.key_value, self.attention_weights), module_output))
             elif len(kwargs[self.module_output]) == 2:
                 if output_attentions:
                     output = dict(zip((self.module_output, self.attention_weights), module_output))
@@ -270,7 +292,7 @@ class FeedForwardWrapper(ModuleWrapper):
         if current_hidden_state is None:
             raise ValueError()
         #
-        ffnn_output = self.base_module(current_hidden_state)
+        ffnn_output = self.base_module.forward(current_hidden_state)
         #
         output = kwargs | {self.module_output: ffnn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -284,19 +306,16 @@ class LayerWrapper(ModuleWrapper):
     _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
     _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
 
-    attention_outputs: str = 'attention_outputs'
-    feed_forward_outputs: str = 'feed_forward_outputs'
-
-    def __init__(self, layer: nn.Module):
-        super().__init__(layer)
+    def __init__(self, layer: nn.Module, *args, **kwargs):
+        super().__init__(layer, *args, **kwargs)
         # Attribute names
         self._initial_norm_attr: LayerInitialNormAttr = self._get_initial_norm_attr()
         self._attention_attr: LayerAttentionAttr = self._get_attention_attr()
         self._intermediate_norm_attr: LayerIntermediateNormAttr = self._get_intermediate_norm_attr()
         self._feed_forward_attr: LayerFeedForwardAttr = self._get_feed_forward_attr()
         # Wrappers
-        self._attention_wrapper = self._attention_dtype(getattr(self._module, self._attention_attr.value))
-        self._feed_forward_wrapper = self._feed_forward_dtype(getattr(self._module, self._feed_forward_attr.value))
+        self._attention_wrapper = self._attention_dtype(getattr(self._module, self._attention_attr.value), super_wrapper=self)
+        self._feed_forward_wrapper = self._feed_forward_dtype(getattr(self._module, self._feed_forward_attr.value), super_wrapper=self)
 
     @property
     def is_attention_wrapping(self):
@@ -350,7 +369,7 @@ class LayerWrapper(ModuleWrapper):
 
     @property
     def initial_norm(self) -> nn.Module:
-        return getattr(self.base_module, self._layer_norm_attr)
+        return getattr(self.base_module, self._initial_norm_attr.value)
 
     @property
     def attention(self):
@@ -362,7 +381,7 @@ class LayerWrapper(ModuleWrapper):
 
     @property
     def intermediate_norm(self) -> nn.Module:
-        return getattr(self.base_module, self._layer_norm_attr)
+        return getattr(self.base_module, self._intermediate_norm_attr.value)
 
     @property
     def feed_forward(self):
@@ -382,14 +401,14 @@ class LayerWrapper(ModuleWrapper):
         #
         residual = current_hidden_state
         # Initial Normalisation
-        current_hidden_state = self.initial_norm(current_hidden_state)
+        current_hidden_state = self.initial_norm.forward(current_hidden_state)
         # Self attention
         attention_output = self.attention_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.attention_wrapper.module_output)
         current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
         # Intermediate Normalisation
-        current_hidden_state = self.intermediate_norm(current_hidden_state)
+        current_hidden_state = self.intermediate_norm.forward(current_hidden_state)
         # Feed-Forward
         ffnn_output = self.feed_forward_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
@@ -438,7 +457,7 @@ class LayerWrapper(ModuleWrapper):
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_output:
-                output[FFNN_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.module_output]
+                output[FFNN_OUTPUT] = feed_forward_output
 
             kwargs |= {
                 self.module_output: output,
@@ -471,7 +490,7 @@ class LayersWrapper(ModuleWrapper):
         return any(layer_wrapper.is_wrapping for layer_wrapper in self._layer_wrappers)
 
     def enable_wrapper(self):
-        if not self._is_wrapping:
+        if not self.is_wrapping:
             for layer_wrapper in self._layer_wrappers:
                 layer_wrapper.enable_wrapper()
 
@@ -493,7 +512,7 @@ class LayersWrapper(ModuleWrapper):
         return self.base_module
 
     @property
-    def layers_wrapper_iterator(self) -> Iterable:
+    def layer_wrappers_iterator(self) -> Iterable:
         return self.layer_wrappers
 
     def _use_dynamic_cache(self) -> bool:
@@ -554,7 +573,7 @@ class LayersWrapper(ModuleWrapper):
             kwargs[HIDDEN_STATES].append(layer_output[CURR_HIDDEN_STATE])
         # Attention weights
         if output_attentions:
-            kwargs[ATTN_WEIGHTS].append(layer_output[layer_output[CURR_ATTN_WEIGHTS]])
+            kwargs[ATTN_WEIGHTS].append(layer_output[CURR_ATTN_WEIGHTS])
         # Cache
         if use_cache:
             if isinstance(kwargs[CACHE], DynamicCache):
@@ -563,10 +582,10 @@ class LayersWrapper(ModuleWrapper):
                 kwargs[CACHE].append(layer_output[CURR_KEY_VALUE])
         # Attention output
         if return_attention_output:
-            kwargs[ATTN_OUTPUTS] = kwargs.get(ATTN_OUTPUTS, list()).append(kwargs.pop(ATTN_OUTPUT))
+            kwargs[ATTN_OUTPUTS].append(layer_output[ATTN_OUTPUT])
         # FFNN output
         if return_feed_forward_output:
-            kwargs[FFNN_OUTPUTS] = kwargs.get(FFNN_OUTPUTS, list()).append(kwargs.pop(FFNN_OUTPUT))
+            kwargs[FFNN_OUTPUTS].append(layer_output[FFNN_OUTPUT])
 
         kwargs |= {
             USE_CACHE: use_cache,
@@ -575,6 +594,8 @@ class LayersWrapper(ModuleWrapper):
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
+
+        kwargs.pop(ITERATION)
 
         return kwargs
 
@@ -587,7 +608,7 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = valid_mask.view(kwargs[BATCH_SIZE], -1)
                 attention_mask = attention_mask[:, None, None, :]
                 attention_mask = attention_mask.to(dtype=kwargs[DTYPE])
-                attention_mask = (1.0 - attention_mask) * torch.finfo(self.dtype).min
+                attention_mask = (1.0 - attention_mask) * torch.finfo(kwargs[DTYPE]).min
             else:
                 attention_mask = None
         elif isinstance(self.super_wrapper.base_model, LlamaModel):
@@ -626,11 +647,11 @@ class LayersWrapper(ModuleWrapper):
     def _wrapped_forward(self, **kwargs):
         output = kwargs
         # Iterate over layers
-        for iteration, layer_wrapper in enumerate(self._layer_wrappers_iterator):
+        for iteration, layer_wrapper in enumerate(self.layer_wrappers_iterator):
             # Apply layer transformation
             output = layer_wrapper.forward(iteration=iteration, **output)
             # Update model state
-            output = self._update_state(layer_wrapper, **output)
+            output = self._update_state(**output)
 
         return output
 
@@ -717,8 +738,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     @property
     def base_model(self) -> PreTrainedModel:
-        logger.warning(f'The returned base {self._model_name} may be modified.')
-        self.disable_wrapper()
+        logger.warning(
+            f'The returned base {self._model_name} may be modified and may have internal wrappers still enabled.'
+        )
         return self._model
 
     @property
@@ -773,11 +795,18 @@ class TransformerWrapper(PreTrainedModelWrapper):
         super().__init__(*args, **kwargs)
         # Attribute names
         self._embedding_attr: TransformerEmbeddingAttr = self._get_embedding_attr()
+        self._position_embedding_attr: Optional[TransformerPositionEmbeddingAttr] = self._get_position_embedding_attr()
         self._layers_attr: TransformerLayersAttr = self._get_layers_attr()
         self._norm_attr: TransformerNormAttr = self._get_norm_attr()
         # Wrappers
-        self._embedding_wrapper = self._embedding_dtype(getattr(self._model, self._embedding_attr.value))
-        self._layers_wrapper = self._layers_dtype(getattr(self._module, self._layers_attr.value), super_wrapper=self)
+        self._embedding_wrapper = self._embedding_dtype(
+            getattr(self._model, self._embedding_attr.value),
+            super_wrapper=self,
+            position_embeddings=getattr(
+                self._model, self._position_embedding_attr.value
+            ) if self._position_embedding_attr is not None else None
+        )
+        self._layers_wrapper = self._layers_dtype(getattr(self._model, self._layers_attr.value), super_wrapper=self)
 
     @property
     def is_embedding_wrapping(self):
@@ -802,8 +831,8 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     def enable_wrapper(self):
         if not self.is_wrapping:
-            self.enable_attention_wrapper()
-            self.enable_feed_forward_wrapper()
+            self.enable_embedding_wrapper()
+            self.enable_layers_wrapper()
 
     def disable_embedding_wrapper(self):
         if self.is_embedding_wrapping:
@@ -821,6 +850,12 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     def _get_embedding_attr(self) -> TransformerEmbeddingAttr:
         return _get_module_attr_name(self.base_model, TransformerEmbeddingAttr)
+
+    def _get_position_embedding_attr(self) -> Optional[TransformerPositionEmbeddingAttr]:
+        try:
+            return _get_module_attr_name(self.base_model, TransformerPositionEmbeddingAttr)
+        except AttributeError:
+            return None
 
     def _get_layers_attr(self) -> TransformerLayersAttr:
         return _get_module_attr_name(self.base_model, TransformerLayersAttr)
@@ -846,7 +881,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def norm(self) -> nn.Module:
-        return getattr(self.base_model, self._transformer_norm_attr.value)
+        return getattr(self.base_model, self._norm_attr.value)
 
     def _pre_process_input(
             self,
@@ -952,7 +987,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         # Process embeddings with transformer layers
         output = self.layers_wrapper.forward(**output)
         # Apply last normalisation
-        output_hidden_state = self.norm(output.pop(self.layers_wrapper.module_output))
+        output_hidden_state = self.norm.forward(output.pop(self.layers_wrapper.module_output))
         # Extend output with normalised last hidden state
         output |= {self.model_output: output_hidden_state}
 
@@ -1019,7 +1054,7 @@ class LMHeadWrapper(ModuleWrapper):
         if output_hidden_state is None:
             raise ValueError()
         #
-        logits = self.base_model(output_hidden_state)
+        logits = self.base_model.forward(output_hidden_state)
         #
         output = kwargs | {self.module_output: logits, OUT_HIDDEN_STATE: output_hidden_state}
 
