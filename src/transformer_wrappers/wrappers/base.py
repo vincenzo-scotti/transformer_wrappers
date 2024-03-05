@@ -398,6 +398,8 @@ class LayerWrapper(ModuleWrapper):
     def _wrapped_forward(
             self,
             current_hidden_state: Optional[torch.tensor] = None,
+            add_attn_residual: bool = True,
+            add_ffnn_residual: bool = True,
             **kwargs
     ):
         if current_hidden_state is None:
@@ -410,14 +412,20 @@ class LayerWrapper(ModuleWrapper):
         attention_output = self.attention_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.attention_wrapper.module_output)
-        current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
+        if add_attn_residual:
+            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
+        else:
+            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output]
         # Intermediate Normalisation
         current_hidden_state = self.intermediate_norm.forward(current_hidden_state)
         # Feed-Forward
         ffnn_output = self.feed_forward_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.feed_forward_wrapper.module_output)
-        current_hidden_state = ffnn_output + residual  # TODO verify this
+        if add_ffnn_residual:
+            current_hidden_state = ffnn_output + residual  # TODO verify this
+        else:
+            current_hidden_state = ffnn_output
         # Extend input with module output
         output = kwargs | {
             self.module_output: current_hidden_state,
