@@ -85,7 +85,7 @@ To add the source code directory(ies) to the Python path, you can add this line 
 export PYTHONPATH=$PYTHONPATH:/path/to/transformer_wrappers/src
 ```
 
-To run the unit tests you will need to add the Hugging-Face authentication token to your environment variables:
+To run the unit tests you will need to add the [Hugging-Face authentication token](https://huggingface.co/docs/hub/security-tokens) to your environment variables:
 
 ```bash
 export HUGGING_FACE_TOKEN=...
