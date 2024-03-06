@@ -238,6 +238,8 @@ class AttentionWrapper(ModuleWrapper):
             raise NotImplementedError(
                 f'Unsupported model type: `{type(self.super_wrapper.super_wrapper.super_wrapper.base_model)}`.'
             )
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+            attention_params |= {POSITIONS_IDS: kwargs[POSITIONS_IDS]}
         #
         kwargs |= {ATTN_PARAMS: attention_params}
 

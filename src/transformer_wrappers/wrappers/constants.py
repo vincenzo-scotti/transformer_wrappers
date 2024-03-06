@@ -3,10 +3,11 @@
 INPUT_IDS: str = 'input_ids'
 INPUT_EMBEDS: str = 'inputs_embeds'
 ATTENTION_MASK: str = 'attention_mask'
-POSITIONS_IDS: str = 'positions_ids'
-PAST_KEY_VALUE: str = 'past_key_values'
+POSITIONS_IDS: str = 'position_ids'
+PAST_KEY_VALUES: str = 'past_key_values'
 
 LAYER_PAST: str = 'layer_past'
+PAST_KEY_VALUE: str = 'past_key_value'
 
 HIDDEN_STATES: str = 'hidden_states'
 LAST_HIDDEN_STATE: str = 'last_hidden_state'

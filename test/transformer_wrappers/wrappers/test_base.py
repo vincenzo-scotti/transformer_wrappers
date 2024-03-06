@@ -22,6 +22,7 @@ class TestTransformerWrapper(unittest.TestCase):
     ):
         model_args = model_args if model_args is not None else tuple()
         model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer = tokenizer if tokenizer is not None else transformer
         tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
         
@@ -157,6 +158,7 @@ class TestCausalLMWrapper(unittest.TestCase):
     ):
         model_args = model_args if model_args is not None else tuple()
         model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer = tokenizer if tokenizer is not None else transformer
         tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
 
@@ -233,6 +235,7 @@ class TestCausalLMWrapper(unittest.TestCase):
     ):
         model_args = model_args if model_args is not None else tuple()
         model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer = tokenizer if tokenizer is not None else transformer
         tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
 
