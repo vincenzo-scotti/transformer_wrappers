@@ -138,7 +138,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         input_encodings = model.tokenizer(input_string, return_tensors='pt')
         output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
-        assert torch.equal(output, output_wrapper), 'Generated token tensors do not match.'
+        assert torch.equal(output, output_wrapper['input_ids']), 'Generated token tensors do not match.'
 
 
 if __name__ == '__main__':

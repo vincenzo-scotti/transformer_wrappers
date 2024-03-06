@@ -1,16 +1,19 @@
 import os
 import warnings
+import inspect
 
 from enum import Enum
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Callable
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer, GenerationConfig, LogitsProcessorList, \
+    StoppingCriteriaList
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GPT2PreTrainedModel, LlamaModel, MistralModel
+from transformers.generation.utils import GenerateOutput
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
@@ -1214,9 +1217,32 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
             return kwargs
 
-    def prepare_inputs_for_generation(self, *args, **kwargs):
+    def generate(self, *args, return_inner_states: bool = True, **kwargs):
+        generate_output = super().generate(*args, **kwargs)
+        # Re-run through layers to collect all data  # TODO find better solution
+        if return_inner_states:
+            #
+            return self.forward(
+                input_ids=generate_output,
+                **{
+                    k: kwargs[k] for k in set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
+                    if k not in {'args', 'kwargs', 'self', 'base_model_output'}
+                },
+                return_dict=True,
+                output_attentions=True,
+                use_cache=True,
+                output_hidden_states=True,
+                return_attention_output=True,  # Self-attention layer output
+                return_feed_forward_output=True
+            ) | {INPUT_IDS: generate_output}
+        else:
+            return generate_output
+
+    def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
         self.enable_wrapper()
-        inputs = self.base_model.prepare_inputs_for_generation(*args, **kwargs) | {'base_model_output': True}
+        inputs = self.base_model.prepare_inputs_for_generation(
+            *args, **kwargs
+        ) | {'base_model_output': base_model_output}
 
         return inputs
 
