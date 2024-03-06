@@ -46,7 +46,7 @@ class TestTransformerWrapper(unittest.TestCase):
             tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
-            ** wrapper_kwargs
+            **wrapper_kwargs
         )
         input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
         output_wrapper = model(
@@ -138,7 +138,6 @@ class TestTransformerWrapper(unittest.TestCase):
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
             },
-            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
@@ -219,7 +218,6 @@ class TestCausalLMWrapper(unittest.TestCase):
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
             },
-            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
@@ -282,7 +280,6 @@ class TestCausalLMWrapper(unittest.TestCase):
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
             },
-            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 

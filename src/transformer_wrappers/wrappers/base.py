@@ -634,6 +634,9 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = None
         elif isinstance(self.super_wrapper.base_model, LlamaPreTrainedModel):
             attention_mask = self.super_wrapper.base_model._update_causal_mask(valid_mask, kwargs[EMBEDDINGS])
+            # TODO find better solution
+            if attention_mask.size()[-2] != kwargs[SEQ_LENGTH] or attention_mask.size()[-1] != kwargs[SEQ_LENGTH]:
+                attention_mask = attention_mask[..., :kwargs[SEQ_LENGTH], :kwargs[SEQ_LENGTH]]
         elif isinstance(self.super_wrapper.base_model, MistralPreTrainedModel):
             if valid_mask is not None and self.super_wrapper.base_model._attn_implementation == 'flash_attention_2' and kwargs[BATCH_SIZE] > 1:
                 if valid_mask[:, -1].sum().item() != kwargs[BATCH_SIZE]:
