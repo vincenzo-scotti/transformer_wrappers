@@ -728,6 +728,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             pretrained_model_name_or_path: Union[str, os.PathLike],
             model_args: Optional[Tuple] = None,
             model_kwargs: Optional[Dict] = None,
+            tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
             tokenizer_kwargs: Optional[Dict] = None,
             **wrapper_kwargs
@@ -735,6 +736,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         #
         model_args = model_args if model_args else tuple()
         model_kwargs = model_kwargs if model_kwargs else dict()
+        tokenizer_name_or_path = tokenizer_name_or_path if tokenizer_name_or_path else pretrained_model_name_or_path
         tokenizer_args = tokenizer_args if tokenizer_args else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
@@ -748,7 +750,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
                 **model_kwargs
             ),
             AutoTokenizer.from_pretrained(
-                pretrained_model_name_or_path, *tokenizer_args, **tokenizer_kwargs
+                tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
             )
         )
 

@@ -15,6 +15,7 @@ class TestTransformerWrapper(unittest.TestCase):
             transformer,
             model_args=None,
             model_kwargs=None,
+            tokenizer=None,
             tokenizer_args=None,
             tokenizer_kwargs=None,
             **wrapper_kwargs
@@ -27,8 +28,8 @@ class TestTransformerWrapper(unittest.TestCase):
         input_string = 'Hello, World!\n'
 
         model = AutoModel.from_pretrained(transformer, *model_args, **model_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
-        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
+        tok = AutoTokenizer.from_pretrained(tokenizer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tok(input_string, return_tensors='pt').to(model.device)
         output = model(
             **input_encodings,
             return_dict=True,
@@ -41,6 +42,7 @@ class TestTransformerWrapper(unittest.TestCase):
             transformer,
             model_args=model_args,
             model_kwargs=model_kwargs,
+            tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
             ** wrapper_kwargs
@@ -128,13 +130,15 @@ class TestTransformerWrapper(unittest.TestCase):
 
     def test_llama2_forward(self):
         self._test_forward(
-            'meta-llama/Llama-2-7b',
+            'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
-            }
+            },
+            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
 
@@ -146,6 +150,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             transformer,
             model_args=None,
             model_kwargs=None,
+            tokenizer=None,
             tokenizer_args=None,
             tokenizer_kwargs=None,
             **wrapper_kwargs
@@ -158,8 +163,8 @@ class TestCausalLMWrapper(unittest.TestCase):
         input_string = 'Hello, World!\n'
 
         model = AutoModelForCausalLM.from_pretrained(transformer, *model_args, **model_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
-        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
+        tok = AutoTokenizer.from_pretrained(tokenizer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tok(input_string, return_tensors='pt').to(model.device)
         output = model.forward(
             **input_encodings,
             return_dict=True,
@@ -172,6 +177,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             transformer,
             model_args=model_args,
             model_kwargs=model_kwargs,
+            tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
             **wrapper_kwargs
@@ -204,13 +210,15 @@ class TestCausalLMWrapper(unittest.TestCase):
 
     def test_llama2_forward(self):
         self._test_forward(
-            'meta-llama/Llama-2-7b',
+            'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
-            }
+            },
+            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
     def _test_generate(
@@ -218,6 +226,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             transformer,
             model_args=None,
             model_kwargs=None,
+            tokenizer=None,
             tokenizer_args=None,
             tokenizer_kwargs=None,
             **wrapper_kwargs
@@ -230,14 +239,15 @@ class TestCausalLMWrapper(unittest.TestCase):
         input_string = 'Hello, World!\n'
 
         model = AutoModelForCausalLM.from_pretrained(transformer, *model_args, **model_kwargs)
-        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
-        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
+        tok = AutoTokenizer.from_pretrained(tokenizer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tok(input_string, return_tensors='pt').to(model.device)
         output = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
         model = self.causal_lm_wrapper.from_pretrained(
             transformer,
             model_args=model_args,
             model_kwargs=model_kwargs,
+            tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
             **wrapper_kwargs
@@ -262,13 +272,15 @@ class TestCausalLMWrapper(unittest.TestCase):
 
     def test_llama2_generate(self):
         self._test_generate(
-            'meta-llama/Llama-2-7b',
+            'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
                 'token': os.environ['HUGGING_FACE_TOKEN']
-            }
+            },
+            tokenizer_name_or_path='meta-llama/Llama-2-7b-hf',
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
 
