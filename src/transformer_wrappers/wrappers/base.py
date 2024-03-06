@@ -10,9 +10,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from transformers import PreTrainedModel, PreTrainedTokenizer, GenerationConfig, LogitsProcessorList, \
-    StoppingCriteriaList
+    StoppingCriteriaList, PretrainedConfig
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GPT2PreTrainedModel, LlamaModel, MistralModel
+from transformers import GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
 from transformers.generation.utils import GenerateOutput
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
@@ -27,9 +27,9 @@ from transformers import logging
 from .constants import *
 
 # TODO fix base model/module properties and wrapper enable/disable methods
-# TODO implement output container (for generate)
 # TODO implement gradient checkpointing
 # TODO implement training with adapters
+# TODO test past key-value
 
 
 __all__ = [
@@ -145,9 +145,9 @@ class ModuleWrapper(nn.Module, BaseWrapper):
 
     @property
     def base_module(self) -> nn.Module:
-        logger.warning(
-            f'The returned base {self._module_name} may be modified and may have internal wrappers still enabled.'
-        )
+        # logger.warning(
+        #     f'The returned base {self._module_name} may be modified and may have internal wrappers still enabled.'
+        # )
         return self._module
 
     @property
@@ -231,9 +231,9 @@ class AttentionWrapper(ModuleWrapper):
             USE_CACHE: kwargs[USE_CACHE]
         }
         if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2PreTrainedModel):
-            attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUE][layer_idx]}
-        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaModel, MistralModel)):
-            attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUE]}
+            attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUES][layer_idx]}
+        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+            attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUES]}
         else:
             raise NotImplementedError(
                 f'Unsupported model type: `{type(self.super_wrapper.super_wrapper.super_wrapper.base_model)}`.'
@@ -274,7 +274,10 @@ class AttentionWrapper(ModuleWrapper):
             #
             module_output = kwargs.pop(self.module_output)
             if len(module_output) == 3:
-                output = dict(zip((self.module_output, self.key_value, self.attention_weights), module_output))
+                if isinstance(self.super_wrapper.base_module, (LlamaDecoderLayer, MistralDecoderLayer)):
+                    output = dict(zip((self.module_output, self.attention_weights, self.key_value), module_output))
+                else:
+                    output = dict(zip((self.module_output, self.key_value, self.attention_weights), module_output))
             elif len(module_output) == 2:
                 if output_attentions:
                     output = dict(zip((self.module_output, self.attention_weights), module_output))
@@ -592,7 +595,9 @@ class LayersWrapper(ModuleWrapper):
             kwargs[ATTN_WEIGHTS].append(layer_output[CURR_ATTN_WEIGHTS])
         # Cache
         if use_cache:
-            if isinstance(kwargs[CACHE], DynamicCache):
+            if isinstance(kwargs[CACHE], DynamicCache) or isinstance(
+                    self.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)
+            ):
                 kwargs[CACHE] = layer_output[CURR_KEY_VALUE]
             else:
                 kwargs[CACHE].append(layer_output[CURR_KEY_VALUE])
@@ -625,10 +630,10 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = (1.0 - attention_mask) * torch.finfo(kwargs[DTYPE]).min
             else:
                 attention_mask = None
-        elif isinstance(self.super_wrapper.base_model, LlamaModel):
+        elif isinstance(self.super_wrapper.base_model, LlamaPreTrainedModel):
             attention_mask = self.super_wrapper.base_model._update_causal_mask(valid_mask, kwargs[EMBEDDINGS])
-        elif isinstance(self.super_wrapper.base_model, MistralModel):
-            if valid_mask is not None and self.base_model._attn_implementation == 'flash_attention_2' and kwargs:
+        elif isinstance(self.super_wrapper.base_model, MistralPreTrainedModel):
+            if valid_mask is not None and self.super_wrapper.base_model._attn_implementation == 'flash_attention_2' and kwargs[BATCH_SIZE] > 1:
                 if valid_mask[:, -1].sum().item() != kwargs[BATCH_SIZE]:
                     raise ValueError('`padding_side=\'right\'` is not with the Flash Attention version of Mistral')
             if self.super_wrapper.base_model._attn_implementation == 'flash_attention_2':
@@ -703,6 +708,10 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = None
 
+    # TODO fix-me this is a temporary solution to use non-eager attention
+    # _supports_flash_attn_2 = True
+    # _supports_sdpa = True
+
     def __init__(
             self,
             model: PreTrainedModel,
@@ -750,9 +759,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     @property
     def base_model(self) -> PreTrainedModel:
-        logger.warning(
-            f'The returned base {self._model_name} may be modified and may have internal wrappers still enabled.'
-        )
+        # logger.warning(
+        #     f'The returned base {self._model_name} may be modified and may have internal wrappers still enabled.'
+        # )
         return self._model
 
     @property
@@ -866,7 +875,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
     def _get_position_embedding_attr(self) -> Optional[TransformerPositionEmbeddingAttr]:
         try:
             return _get_module_attr_name(self.base_model, TransformerPositionEmbeddingAttr)
-        except AttributeError:
+        except ValueError:
             return None
 
     def _get_layers_attr(self) -> TransformerLayersAttr:
@@ -940,7 +949,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         if past_key_values is None:
             if isinstance(self.base_model, GPT2PreTrainedModel):
                 past_key_values = [None] * self.config.num_hidden_layers
-            elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+            elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
@@ -948,7 +957,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         else:
             if isinstance(self.base_model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
                 prefix_length = past_key_values[0][0].size(-2)
-            elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+            elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
                 if not isinstance(past_key_values, Cache):
                     past_key_values = DynamicCache.from_legacy_cache(past_key_values)
                 prefix_length = past_key_values.get_usable_length(seq_length)
@@ -956,18 +965,18 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         # Positions
         if position_ids is not None:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = position_ids.unsqueeze(0)
-            elif isinstance(self.base_model, MistralModel):
+            elif isinstance(self.base_model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         else:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)
-            elif isinstance(self.base_model, MistralModel):
+            elif isinstance(self.base_model, MistralPreTrainedModel):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0).view(-1, seq_length)
@@ -979,7 +988,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             EMBEDDINGS: input_embeds,
             VALID_MASK: attention_mask,
             POSITIONS_IDS: position_ids,
-            PAST_KEY_VALUE: past_key_values,
+            PAST_KEY_VALUES: past_key_values,
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,
             OUTPUT_HIDDEN_STATES: output_hidden_states,
@@ -1031,7 +1040,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
                     return BaseModelOutputWithPast(
                         last_hidden_state=kwargs[self.model_output],
                         past_key_values=cache,
@@ -1180,7 +1189,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, (LlamaModel, MistralModel)):
+                elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
                     return CausalLMOutputWithPast(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
