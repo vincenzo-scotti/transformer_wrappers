@@ -1,5 +1,7 @@
 import unittest
 
+import os
+
 import torch
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 from transformer_wrappers.wrappers import TransformerWrapper, CausalLMWrapper
@@ -8,13 +10,25 @@ from transformer_wrappers.wrappers import TransformerWrapper, CausalLMWrapper
 class TestTransformerWrapper(unittest.TestCase):
     transformer_wrapper = TransformerWrapper
 
-    def test_gpt2_forward(self):
-        transformer = 'gpt2'
+    def _test_forward(
+            self,
+            transformer,
+            model_args=None,
+            model_kwargs=None,
+            tokenizer_args=None,
+            tokenizer_kwargs=None,
+            **wrapper_kwargs
+    ):
+        model_args = model_args if model_args is not None else tuple()
+        model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
+        tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
+        
         input_string = 'Hello, World!\n'
 
-        model = AutoModel.from_pretrained(transformer)
-        tokenizer = AutoTokenizer.from_pretrained(transformer)
-        input_encodings = tokenizer(input_string, return_tensors='pt')
+        model = AutoModel.from_pretrained(transformer, *model_args, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
         output = model(
             **input_encodings,
             return_dict=True,
@@ -23,8 +37,15 @@ class TestTransformerWrapper(unittest.TestCase):
             output_hidden_states=True
         )
 
-        model = self.transformer_wrapper.from_pretrained(transformer)
-        input_encodings = model.tokenizer(input_string, return_tensors='pt')
+        model = self.transformer_wrapper.from_pretrained(
+            transformer,
+            model_args=model_args,
+            model_kwargs=model_kwargs,
+            tokenizer_args=tokenizer_args,
+            tokenizer_kwargs=tokenizer_kwargs,
+            ** wrapper_kwargs
+        )
+        input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
         output_wrapper = model(
             **input_encodings,
             return_dict=True,
@@ -58,10 +79,10 @@ class TestTransformerWrapper(unittest.TestCase):
         for i, (
                 output_hidden_state, prev_output_wrapper_hidden_state, attn_output_wrapper, ffnn_output_wrapper
         ) in enumerate(zip(
-                output.hidden_states[1:],
-                output_wrapper['hidden_states'][:-1],
-                output_wrapper['attention_outputs'],
-                output_wrapper['feed_forward_outputs']
+            output.hidden_states[1:],
+            output_wrapper['hidden_states'][:-1],
+            output_wrapper['attention_outputs'],
+            output_wrapper['feed_forward_outputs']
         ), start=1):
             output_wrapper_hidden_state = prev_output_wrapper_hidden_state + attn_output_wrapper + ffnn_output_wrapper
             if i == len(model.layers):
@@ -92,17 +113,53 @@ class TestTransformerWrapper(unittest.TestCase):
                 output_attentions, output_wrapper_attentions
             ), f'`attentions` tensors at layer {i} not matching.'
 
+    def test_gpt2_forward(self):
+        self._test_forward('gpt2')
+
+    def test_mistral_forward(self):
+        self._test_forward(
+            'mistralai/Mistral-7B-Instruct-v0.2',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            }
+        )
+
+    def test_llama2_forward(self):
+        self._test_forward(
+            'meta-llama/Llama-2-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            }
+        )
+
 
 class TestCausalLMWrapper(unittest.TestCase):
     causal_lm_wrapper = CausalLMWrapper
 
-    def test_gpt2_forward(self):
-        transformer = 'gpt2'
+    def _test_forward(
+            self,
+            transformer,
+            model_args=None,
+            model_kwargs=None,
+            tokenizer_args=None,
+            tokenizer_kwargs=None,
+            **wrapper_kwargs
+    ):
+        model_args = model_args if model_args is not None else tuple()
+        model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
+        tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
+
         input_string = 'Hello, World!\n'
 
-        model = AutoModelForCausalLM.from_pretrained(transformer)
-        tokenizer = AutoTokenizer.from_pretrained(transformer)
-        input_encodings = tokenizer(input_string, return_tensors='pt')
+        model = AutoModelForCausalLM.from_pretrained(transformer, *model_args, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
         output = model.forward(
             **input_encodings,
             return_dict=True,
@@ -111,8 +168,15 @@ class TestCausalLMWrapper(unittest.TestCase):
             output_hidden_states=True
         )
 
-        model = self.causal_lm_wrapper.from_pretrained(transformer)
-        input_encodings = model.tokenizer(input_string, return_tensors='pt')
+        model = self.causal_lm_wrapper.from_pretrained(
+            transformer,
+            model_args=model_args,
+            model_kwargs=model_kwargs,
+            tokenizer_args=tokenizer_args,
+            tokenizer_kwargs=tokenizer_kwargs,
+            **wrapper_kwargs
+        )
+        input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
         output_wrapper = model.forward(
             **input_encodings,
             return_dict=True,
@@ -124,21 +188,88 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
         assert torch.equal(output.logits, output_wrapper['logits']), 'Logit tensors do not match.'
+        
+    def test_gpt2_forward(self):
+        self._test_forward('gpt2')
 
-    def test_gpt2_generate(self):
-        transformer = 'gpt2'
+    def test_mistral_forward(self):
+        self._test_forward(
+            'mistralai/Mistral-7B-Instruct-v0.2',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            }
+        )
+
+    def test_llama2_forward(self):
+        self._test_forward(
+            'meta-llama/Llama-2-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            }
+        )
+
+    def _test_generate(
+            self,
+            transformer,
+            model_args=None,
+            model_kwargs=None,
+            tokenizer_args=None,
+            tokenizer_kwargs=None,
+            **wrapper_kwargs
+    ):
+        model_args = model_args if model_args is not None else tuple()
+        model_kwargs = model_kwargs if model_kwargs is not None else dict()
+        tokenizer_args = tokenizer_args if tokenizer_args is not None else tuple()
+        tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs is not None else dict()
+
         input_string = 'Hello, World!\n'
 
-        model = AutoModelForCausalLM.from_pretrained(transformer)
-        tokenizer = AutoTokenizer.from_pretrained(transformer)
-        input_encodings = tokenizer(input_string, return_tensors='pt')
+        model = AutoModelForCausalLM.from_pretrained(transformer, *model_args, **model_kwargs)
+        tokenizer = AutoTokenizer.from_pretrained(transformer, *tokenizer_args, **tokenizer_kwargs)
+        input_encodings = tokenizer(input_string, return_tensors='pt').to(model.device)
         output = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
-        model = self.causal_lm_wrapper.from_pretrained(transformer)
-        input_encodings = model.tokenizer(input_string, return_tensors='pt')
+        model = self.causal_lm_wrapper.from_pretrained(
+            transformer,
+            model_args=model_args,
+            model_kwargs=model_kwargs,
+            tokenizer_args=tokenizer_args,
+            tokenizer_kwargs=tokenizer_kwargs,
+            **wrapper_kwargs
+        )
+        input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
         output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
         assert torch.equal(output, output_wrapper['input_ids']), 'Generated token tensors do not match.'
+        
+    def test_gpt2_generate(self):
+        self._test_generate('gpt2')
+
+    def test_mistral_generate(self):
+        self._test_generate(
+            'mistralai/Mistral-7B-Instruct-v0.2',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            }
+        )
+
+    def test_llama2_generate(self):
+        self._test_generate(
+            'meta-llama/Llama-2-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            }
+        )
 
 
 if __name__ == '__main__':
