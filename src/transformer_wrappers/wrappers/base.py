@@ -1241,7 +1241,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return self.forward(
                 input_ids=generate_output,
                 **{
-                    k: kwargs[k] for k in set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
+                    k: kwargs.get(k) for k in set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
                     if k not in {'args', 'kwargs', 'self', 'base_model_output'}
                 },
                 return_dict=True,

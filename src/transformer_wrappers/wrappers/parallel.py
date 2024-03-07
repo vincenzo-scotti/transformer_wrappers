@@ -154,7 +154,9 @@ class ParallelCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[PreTrainedModelWrapper] = ParallelTransformerWrapper
 
     def prepare_inputs_for_generation(self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, **kwargs):
-        inputs = super().prepare_inputs_for_generation(*args, **kwargs) | {BLOCKS: blocks, RATE: rate}
+        inputs = super().prepare_inputs_for_generation(*args, **kwargs) | {
+            BLOCKS: blocks, RATE: rate, RETURN_ATTENTION_OUTPUT: True, RETURN_FFNN_OUTPUT: True
+        }
 
         return inputs
 
