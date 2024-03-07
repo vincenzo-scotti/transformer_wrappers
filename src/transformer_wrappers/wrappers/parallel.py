@@ -20,10 +20,11 @@ __all__ = [
 ]
 
 
-logger = logging.get_logger(__name__)
-
 BLOCKS: str = 'blocks'
 RATE: str = 'rate'
+
+
+logger = logging.get_logger(__name__)
 
 
 class ParallelLayerWrapper(LayerWrapper):
@@ -93,7 +94,7 @@ class ParallelLayersWrapper(LayersWrapper):
     def _wrapped_forward(self, rate: int = 1, **kwargs):
         output = self._init_state(**kwargs)
         # Iterate over layers
-        for block_idx, layer_wrapper_block in enumerate(self.layer_wrappers_iterator(rate=kwargs[RATE])):
+        for block_idx, layer_wrapper_block in enumerate(self.layer_wrappers_iterator(rate=rate)):
             for block_layer_idx, layer_wrapper in enumerate(layer_wrapper_block):
                 layer_idx = block_idx * rate + block_layer_idx
                 # Apply layer transformation
@@ -109,8 +110,7 @@ class ParallelLayersWrapper(LayersWrapper):
 
 
 class ParallelTransformerWrapper(TransformerWrapper):
-
-    _layers_dtype: Type[ModuleWrapper] = LayersWrapper
+    _layers_dtype: Type[ModuleWrapper] = ParallelLayersWrapper
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
