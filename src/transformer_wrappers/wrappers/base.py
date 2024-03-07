@@ -69,7 +69,7 @@ class LayerAttentionAttr(Enum):
 
 
 class LayerIntermediateNormAttr(Enum):
-    INPUT_LAYERNORM = 'input_layernorm'
+    INPUT_LAYERNORM = 'post_attention_layernorm'
     LN_2 = 'ln_2'
 
 
