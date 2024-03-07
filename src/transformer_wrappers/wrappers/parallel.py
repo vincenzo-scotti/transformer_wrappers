@@ -30,12 +30,17 @@ logger = logging.get_logger(__name__)
 class ParallelLayerWrapper(LayerWrapper):
     module_output: str = 'parallel_layer_output'
     
-    def _wrapped_forward(self, **kwargs):
-        return super()._wrapped_forward(add_ffnn_residual=False, **kwargs)
+    def _wrapped_forward(self, current_hidden_state: Optional[torch.tensor] = None, **kwargs):
+        output = super()._wrapped_forward(current_hidden_state=current_hidden_state, add_ffnn_residual=False, **kwargs)
+        #
+        output |= {INPUT_HIDDEN_STATE: current_hidden_state}
+
+        return output
         
 
 class ParallelLayersWrapper(LayersWrapper):
-    TMP_LAYER_OUTPUTS: str = 'tmp_layer_outputs'
+    TMP_ATTN_OUTPUTS: str = 'tmp_attention_output'
+    TMP_FFNN_OUTPUTS: str = 'tmp_feed_forward_output'
     
     _layer_dtype: Type[ModuleWrapper] = ParallelLayerWrapper
 
@@ -53,18 +58,16 @@ class ParallelLayersWrapper(LayersWrapper):
             end_of_block: bool = False,
             **kwargs
     ):
-        layer_output = kwargs.pop(self._layer_dtype.module_output)
+        layer_output = kwargs.pop(self._layer_dtype.module_output, None)
         #
-        if end_of_block:
-            # Current hidden state
-            kwargs[CURR_HIDDEN_STATE] = kwargs[CURR_HIDDEN_STATE] + sum(kwargs.pop(self.TMP_LAYER_OUTPUTS))
-            # Hidden states
-            if output_hidden_states:
-                kwargs[HIDDEN_STATES].append(kwargs[CURR_HIDDEN_STATE])
-        else:
+        if layer_output is not None:
             # Current layer output
-            kwargs[self.TMP_LAYER_OUTPUTS] = kwargs.get(self.TMP_LAYER_OUTPUTS, list())
-            kwargs[self.TMP_LAYER_OUTPUTS].append(layer_output[CURR_HIDDEN_STATE])
+            kwargs[self.TMP_ATTN_OUTPUTS] = kwargs.get(self.TMP_ATTN_OUTPUTS, list())
+            kwargs[self.TMP_ATTN_OUTPUTS].append(layer_output[ATTN_OUTPUT])
+            kwargs[self.TMP_FFNN_OUTPUTS] = kwargs.get(self.TMP_FFNN_OUTPUTS, list())
+            kwargs[self.TMP_FFNN_OUTPUTS].append(layer_output[FFNN_OUTPUT])
+            # Set Current hidden state as input of previous block
+            kwargs[CURR_HIDDEN_STATE] = kwargs.pop(INPUT_HIDDEN_STATE)
             # Attention weights
             if output_attentions:
                 kwargs[ATTN_WEIGHTS].append(layer_output[CURR_ATTN_WEIGHTS])
@@ -80,6 +83,14 @@ class ParallelLayersWrapper(LayersWrapper):
             # FFNN output
             if return_feed_forward_output:
                 kwargs[FFNN_OUTPUTS].append(layer_output[FFNN_OUTPUT])
+        else:
+            # End of block
+            # Current hidden state
+            for attn_output, ffnn_output in zip(kwargs.pop(self.TMP_ATTN_OUTPUTS), kwargs.pop(self.TMP_FFNN_OUTPUTS)):
+                kwargs[CURR_HIDDEN_STATE] = kwargs[CURR_HIDDEN_STATE] + attn_output + ffnn_output
+            # Hidden states
+            if output_hidden_states:
+                kwargs[HIDDEN_STATES].append(kwargs[CURR_HIDDEN_STATE])
 
         kwargs |= {
             USE_CACHE: use_cache,
@@ -94,7 +105,7 @@ class ParallelLayersWrapper(LayersWrapper):
     def _wrapped_forward(self, rate: int = 1, **kwargs):
         output = self._init_state(**kwargs)
         # Iterate over layers
-        for block_idx, layer_wrapper_block in enumerate(self.layer_wrappers_iterator(rate=rate)):
+        for block_idx, layer_wrapper_block in enumerate(self.get_layer_wrappers_iterator(rate=rate)):
             for block_layer_idx, layer_wrapper in enumerate(layer_wrapper_block):
                 layer_idx = block_idx * rate + block_layer_idx
                 # Apply layer transformation
@@ -102,7 +113,7 @@ class ParallelLayersWrapper(LayersWrapper):
                 # Update model state
                 output = self._update_state(**output)
             # Update model state
-            output = self._update_state(end_of_block=True, **output)
+            output = self._update_state(**output)
         #
         output |= {RATE: rate}
 

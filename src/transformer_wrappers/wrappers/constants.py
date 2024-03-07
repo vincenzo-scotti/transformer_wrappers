@@ -34,6 +34,7 @@ DEVICE: str = 'device'
 
 ATTN_PARAMS: str = 'attention_params'
 
+INPUT_HIDDEN_STATE: str = 'input_hidden_state'
 CURR_HIDDEN_STATE: str = 'current_hidden_state'
 CURR_KEY_VALUE: str = 'current_key_values'
 CURR_ATTN_WEIGHTS: str = 'current_attention_weights'
