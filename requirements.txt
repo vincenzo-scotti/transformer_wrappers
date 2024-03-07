@@ -1,6 +1,5 @@
 torch
 transformers
 accelerate
-flash-attn  # --no-build-isolation
 jupyterlab
 matplotlib
