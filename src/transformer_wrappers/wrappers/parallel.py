@@ -148,6 +148,7 @@ class ParallelTransformerWrapper(TransformerWrapper):
         #
         self.blocks: Optional[int] = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(BLOCKS)
         self.rate: int = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(RATE, 1)
+        self.iterative: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(ITERATIVE, False)
 
     def _pre_process_input(
             self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, iterative: bool = False, **kwargs
