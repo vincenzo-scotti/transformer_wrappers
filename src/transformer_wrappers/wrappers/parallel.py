@@ -7,6 +7,7 @@ from transformers import DynamicCache
 from transformers import logging
 
 
+from .base import SHARED_STRUCTURE_MODELS
 from .base import ModuleWrapper, PreTrainedModelWrapper
 from .base import LayerWrapper, LayersWrapper
 from .base import TransformerWrapper, CausalLMWrapper
@@ -73,7 +74,9 @@ class ParallelLayersWrapper(LayersWrapper):
                 kwargs[ATTN_WEIGHTS].append(layer_output[CURR_ATTN_WEIGHTS])
             # Cache
             if use_cache:
-                if isinstance(kwargs[CACHE], DynamicCache):
+                if isinstance(kwargs[CACHE], DynamicCache) or isinstance(
+                        self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS
+                ):
                     kwargs[CACHE] = layer_output[CURR_KEY_VALUE]
                 else:
                     kwargs[CACHE].append(layer_output[CURR_KEY_VALUE])

@@ -9,13 +9,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from transformers import PreTrainedModel, PreTrainedTokenizer, GenerationConfig, LogitsProcessorList, \
-    StoppingCriteriaList, PretrainedConfig
+from transformers import PreTrainedModel, PreTrainedTokenizer
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
-from transformers.generation.utils import GenerateOutput
+from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
+from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
@@ -33,6 +32,8 @@ from .constants import *
 
 
 __all__ = [
+    'SHARED_STRUCTURE_MODELS',
+    'SHARED_STRUCTURE_LAYERS',
     'ModuleWrapper',
     'PreTrainedModelWrapper',
     'EmbeddingWrapper',
@@ -47,6 +48,10 @@ __all__ = [
 
 
 logger = logging.get_logger(__name__)
+
+
+SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
+SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
 
 
 class TransformerEmbeddingAttr(Enum):
@@ -206,7 +211,7 @@ class EmbeddingWrapper(ModuleWrapper):
     def _post_process_output(self, base_model_output: bool = False, **kwargs):
         embeddings = kwargs.pop(self.module_output)
         if isinstance(self.super_wrapper.base_model, GPT2PreTrainedModel):
-            embeddings += self._position_embeddings.forward(kwargs[POSITIONS_IDS])
+            embeddings += self._position_embeddings.forward(kwargs[POSITION_IDS])
         if base_model_output:
             return embeddings
         else:
@@ -232,14 +237,14 @@ class AttentionWrapper(ModuleWrapper):
         }
         if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, GPT2PreTrainedModel):
             attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUES][layer_idx]}
-        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
             attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUES]}
         else:
             raise NotImplementedError(
                 f'Unsupported model type: `{type(self.super_wrapper.super_wrapper.super_wrapper.base_model)}`.'
             )
-        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
-            attention_params |= {POSITIONS_IDS: kwargs[POSITIONS_IDS]}
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
+            attention_params |= {POSITION_IDS: kwargs[POSITION_IDS]}
         #
         kwargs |= {ATTN_PARAMS: attention_params}
 
@@ -276,7 +281,7 @@ class AttentionWrapper(ModuleWrapper):
             #
             module_output = kwargs.pop(self.module_output)
             if len(module_output) == 3:
-                if isinstance(self.super_wrapper.base_module, (LlamaDecoderLayer, MistralDecoderLayer)):
+                if isinstance(self.super_wrapper.base_module, SHARED_STRUCTURE_LAYERS):
                     output = dict(zip((self.module_output, self.attention_weights, self.key_value), module_output))
                 else:
                     output = dict(zip((self.module_output, self.key_value, self.attention_weights), module_output))
@@ -536,7 +541,7 @@ class LayersWrapper(ModuleWrapper):
         return self.layer_wrappers
 
     def _use_dynamic_cache(self) -> bool:
-        return all(isinstance(layer, (LlamaDecoderLayer, MistralDecoderLayer)) for layer in self.layers_iterator)
+        return all(isinstance(layer, SHARED_STRUCTURE_LAYERS) for layer in self.layers_iterator)
 
     def _init_state(
             self,
@@ -598,7 +603,7 @@ class LayersWrapper(ModuleWrapper):
         # Cache
         if use_cache:
             if isinstance(kwargs[CACHE], DynamicCache) or isinstance(
-                    self.super_wrapper.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)
+                    self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS
             ):
                 kwargs[CACHE] = layer_output[CURR_KEY_VALUE]
             else:
@@ -632,7 +637,7 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = (1.0 - attention_mask) * torch.finfo(kwargs[DTYPE]).min
             else:
                 attention_mask = None
-        elif isinstance(self.super_wrapper.base_model, LlamaPreTrainedModel):
+        elif isinstance(self.super_wrapper.base_model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
             attention_mask = self.super_wrapper.base_model._update_causal_mask(valid_mask, kwargs[EMBEDDINGS])
             # TODO find better solution
             if attention_mask.size()[-2] != kwargs[SEQ_LENGTH] or attention_mask.size()[-1] != kwargs[SEQ_LENGTH]:
@@ -956,7 +961,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         if past_key_values is None:
             if isinstance(self.base_model, GPT2PreTrainedModel):
                 past_key_values = [None] * self.config.num_hidden_layers
-            elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+            elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
@@ -964,7 +969,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         else:
             if isinstance(self.base_model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
                 prefix_length = past_key_values[0][0].size(-2)
-            elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+            elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
                 if not isinstance(past_key_values, Cache):
                     past_key_values = DynamicCache.from_legacy_cache(past_key_values)
                 prefix_length = past_key_values.get_usable_length(seq_length)
@@ -972,14 +977,14 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         # Positions
         if position_ids is not None:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = position_ids.unsqueeze(0)
             elif isinstance(self.base_model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
         else:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.base_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)
@@ -994,7 +999,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             INPUT_IDS: input_ids,
             EMBEDDINGS: input_embeds,
             VALID_MASK: attention_mask,
-            POSITIONS_IDS: position_ids,
+            POSITION_IDS: position_ids,
             PAST_KEY_VALUES: past_key_values,
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,
@@ -1047,7 +1052,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+                elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
                     return BaseModelOutputWithPast(
                         last_hidden_state=kwargs[self.model_output],
                         past_key_values=cache,
@@ -1196,7 +1201,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, (LlamaPreTrainedModel, MistralPreTrainedModel)):
+                elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
                     return CausalLMOutputWithPast(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
@@ -1256,6 +1261,16 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
         self.enable_wrapper()
+        # TODO find actual solution
+        # if kwargs.get(POSITION_IDS) is None and isinstance(self.base_model, LlamaPreTrainedModel):
+        #     seq_length = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).size(1)
+        #     device = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).device
+        #     prefix_length = DynamicCache.from_legacy_cache(kwargs.get(PAST_KEY_VALUE)).get_usable_length(seq_length)
+        #     position_ids = torch.arange(
+        #         prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
+        #     ).unsqueeze(0)
+        #     kwargs[POSITION_IDS] = position_ids
+        #
         inputs = self.base_model.prepare_inputs_for_generation(
             *args, **kwargs
         ) | {'base_model_output': base_model_output}

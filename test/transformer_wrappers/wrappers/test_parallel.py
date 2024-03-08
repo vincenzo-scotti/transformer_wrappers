@@ -128,6 +128,18 @@ class TestTransformerWrapper(unittest.TestCase):
             }
         )
 
+    def test_gemma_forward(self):
+        self._test_forward(
+            'google/gemma-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            },
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
+        )
+
     def test_llama2_forward(self):
         self._test_forward(
             'meta-llama/Llama-2-7b-hf',
@@ -208,6 +220,18 @@ class TestCausalLMWrapper(unittest.TestCase):
             }
         )
 
+    def test_gemma_forward(self):
+        self._test_forward(
+            'google/gemma-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            },
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
+        )
+
     def test_llama2_forward(self):
         self._test_forward(
             'meta-llama/Llama-2-7b-hf',
@@ -268,6 +292,18 @@ class TestCausalLMWrapper(unittest.TestCase):
                 'attn_implementation': 'eager',
                 'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             }
+        )
+
+    def test_gemma_generate(self):
+        self._test_generate(
+            'google/gemma-7b',
+            model_kwargs={
+                'torch_dtype': torch.bfloat16,
+                'attn_implementation': 'eager',
+                'device_map': torch.device('cuda' if torch.cuda.is_available() else 'cpu'),
+                'token': os.environ['HUGGING_FACE_TOKEN']
+            },
+            tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
     def test_llama2_generate(self):
