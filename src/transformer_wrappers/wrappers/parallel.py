@@ -1,4 +1,4 @@
-from itertools import batched
+from itertools import batched, chain, repeat
 from typing import Type, Optional, Iterable, Tuple, Union
 
 import torch
@@ -23,6 +23,7 @@ __all__ = [
 
 BLOCKS: str = 'blocks'
 RATE: str = 'rate'
+ITERATIVE: str = 'iterative'
 
 
 logger = logging.get_logger(__name__)
@@ -45,8 +46,13 @@ class ParallelLayersWrapper(LayersWrapper):
     
     _layer_dtype: Type[ModuleWrapper] = ParallelLayerWrapper
 
-    def get_layer_wrappers_iterator(self, rate: int = 1) -> Iterable:
-        return batched(super().get_layer_wrappers_iterator(), rate)
+    def get_layer_wrappers_iterator(self, rate: int = 1, iterative: bool = False) -> Iterable:
+        if iterative:
+            return chain.from_iterable(
+                repeat(block, rate) for block in batched(super().get_layer_wrappers_iterator(), rate)
+            )
+        else:
+            return batched(super().get_layer_wrappers_iterator(), rate)
 
     def _update_state(
             self,
@@ -105,20 +111,31 @@ class ParallelLayersWrapper(LayersWrapper):
         
         return kwargs
 
-    def _wrapped_forward(self, rate: int = 1, **kwargs):
+    def _wrapped_forward(self, rate: int = 1, iterative: bool = False, **kwargs):
         output = self._init_state(**kwargs)
         # Iterate over layers
-        for block_idx, layer_wrapper_block in enumerate(self.get_layer_wrappers_iterator(rate=rate)):
+        for block_idx, layer_wrapper_block in enumerate(self.get_layer_wrappers_iterator(rate=rate, iterative=iterative)):
             for block_layer_idx, layer_wrapper in enumerate(layer_wrapper_block):
                 layer_idx = block_idx * rate + block_layer_idx
+                #
+                if isinstance(self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
+                    original_layer_idx = layer_wrapper.attention_wrapper.base_module.layer_idx
+                    layer_wrapper.attention_wrapper.base_module.layer_idx = layer_idx
+                else:
+                    original_layer_idx
                 # Apply layer transformation
                 output = layer_wrapper.forward(layer_idx=layer_idx, **output)
+                #
+                if isinstance(self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
+                    layer_wrapper.attention_wrapper.base_module.layer_idx = original_layer_idx
+                else:
+                    original_layer_idx
                 # Update model state
                 output = self._update_state(**output)
             # Update model state
             output = self._update_state(**output)
         #
-        output |= {RATE: rate}
+        output |= {RATE: rate, ITERATIVE: iterative}
 
         return output
 
@@ -132,7 +149,9 @@ class ParallelTransformerWrapper(TransformerWrapper):
         self.blocks: Optional[int] = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(BLOCKS)
         self.rate: int = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(RATE, 1)
 
-    def _pre_process_input(self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, **kwargs):
+    def _pre_process_input(
+            self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, iterative: bool = False, **kwargs
+    ):
         kwargs = super()._pre_process_input(*args, **kwargs)
         #
         if blocks is not None and rate is not None:
@@ -148,7 +167,7 @@ class ParallelTransformerWrapper(TransformerWrapper):
         if rate * blocks != self.config.num_hidden_layers:
             raise ValueError('`rate` must be an integer divisor of `num_hidden_layers`')
         #
-        kwargs |= {BLOCKS: blocks, RATE: rate}
+        kwargs |= {BLOCKS: blocks, RATE: rate, ITERATIVE: iterative}
 
         return kwargs
 
@@ -156,9 +175,11 @@ class ParallelTransformerWrapper(TransformerWrapper):
 class ParallelCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[PreTrainedModelWrapper] = ParallelTransformerWrapper
 
-    def prepare_inputs_for_generation(self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, **kwargs):
+    def prepare_inputs_for_generation(
+            self, *args, blocks: Optional[int] = None, rate: Optional[int] = None, iterative: bool = False, **kwargs
+    ):
         inputs = super().prepare_inputs_for_generation(*args, **kwargs) | {
-            BLOCKS: blocks, RATE: rate, RETURN_ATTENTION_OUTPUT: True, RETURN_FFNN_OUTPUT: True
+            BLOCKS: blocks, RATE: rate, ITERATIVE: iterative, RETURN_ATTENTION_OUTPUT: True, RETURN_FFNN_OUTPUT: True
         }
 
         return inputs
