@@ -212,6 +212,8 @@ class EmbeddingWrapper(ModuleWrapper):
         embeddings = kwargs.pop(self.module_output)
         if isinstance(self.super_wrapper.base_model, GPT2PreTrainedModel):
             embeddings += self._position_embeddings.forward(kwargs[POSITION_IDS])
+        elif isinstance(self.super_wrapper.base_model, GemmaPreTrainedModel):
+            embeddings *= embeddings.size(-1) ** 0.5
         if base_model_output:
             return embeddings
         else:
