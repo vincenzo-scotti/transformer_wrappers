@@ -55,3 +55,5 @@ RETURN_FFNN_OUTPUT: str = 'return_feed_forward_output'
 BASE_MODEL: str = 'base_model'
 
 ITERATION: str = 'iteration'
+
+OUTPUT_IDS: str = 'input_ids'

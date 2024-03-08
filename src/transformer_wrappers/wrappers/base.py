@@ -1264,7 +1264,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                 output_hidden_states=True,
                 return_attention_output=True,  # Self-attention layer output
                 return_feed_forward_output=True
-            ) | {INPUT_IDS: generate_output}
+            ) | {OUTPUT_IDS: generate_output}
         else:
             return generate_output
 
