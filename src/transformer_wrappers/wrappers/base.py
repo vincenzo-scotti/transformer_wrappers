@@ -23,6 +23,9 @@ from transformers.modeling_attn_mask_utils import (
 )
 from transformers import logging
 
+from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
+from peft.peft_model import PeftModel
+
 from .constants import *
 
 # TODO fix base model/module properties and wrapper enable/disable methods
@@ -740,6 +743,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             pretrained_model_name_or_path: Union[str, os.PathLike],
             model_args: Optional[Tuple] = None,
             model_kwargs: Optional[Dict] = None,
+            lora_config: Optional[LoraConfig] = None,
             tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
             tokenizer_kwargs: Optional[Dict] = None,
@@ -755,16 +759,16 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
-        wrapper = cls(
-            cls._auto_model_dtype.from_pretrained(
-                pretrained_model_name_or_path,
-                *model_args,
-                **model_kwargs
-            ),
-            AutoTokenizer.from_pretrained(
-                tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
+        model = cls._auto_model_dtype.from_pretrained(
+                pretrained_model_name_or_path, *model_args, **model_kwargs
             )
+        tokenizer = AutoTokenizer.from_pretrained(
+            tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
         )
+        if lora_config is not None:
+            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)  # TODO fix gradient checkpointing issue
+            model = get_peft_model(model, lora_config)
+        wrapper = cls(model, tokenizer)
 
         return wrapper
 
@@ -776,7 +780,10 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         # logger.warning(
         #     f'The returned base {self._model_name} may be modified and may have internal wrappers still enabled.'
         # )
-        return self._model
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model
+        else:
+            return self._model
 
     @property
     def tokenizer(self) -> PreTrainedTokenizer:

@@ -6,6 +6,8 @@ import torch
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 from transformer_wrappers.wrappers import TransformerWrapper, CausalLMWrapper
 
+from peft import LoraConfig
+
 
 class TestTransformerWrapper(unittest.TestCase):
     transformer_wrapper = TransformerWrapper
@@ -15,6 +17,7 @@ class TestTransformerWrapper(unittest.TestCase):
             transformer,
             model_args=None,
             model_kwargs=None,
+            lora_config=None,
             tokenizer=None,
             tokenizer_args=None,
             tokenizer_kwargs=None,
@@ -43,6 +46,7 @@ class TestTransformerWrapper(unittest.TestCase):
             transformer,
             model_args=model_args,
             model_kwargs=model_kwargs,
+            lora_config=lora_config,
             tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
@@ -116,8 +120,21 @@ class TestTransformerWrapper(unittest.TestCase):
                 output_attentions, output_wrapper_attentions
             ), f'`attentions` tensors at layer {i} not matching.'
 
+    def _test_lora_forward(self, *args, **kwargs):
+        lora_config = LoraConfig(
+            lora_alpha=16,
+            lora_dropout=0.1,
+            r=64,
+            bias="none",
+            task_type="FEATURE_EXTRACTION",
+        )
+        self._test_forward(*args, lora_config=lora_config, **kwargs)
+
     def test_gpt2_forward(self):
         self._test_forward('gpt2')
+
+    def test_gpt2_forward_lora(self):
+        self._test_lora_forward('gpt2')
 
     def test_mistral_forward(self):
         self._test_forward(
@@ -162,6 +179,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             transformer,
             model_args=None,
             model_kwargs=None,
+            lora_config=None,
             tokenizer=None,
             tokenizer_args=None,
             tokenizer_kwargs=None,
@@ -190,6 +208,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             transformer,
             model_args=model_args,
             model_kwargs=model_kwargs,
+            lora_config=lora_config,
             tokenizer_name_or_path=tokenizer,
             tokenizer_args=tokenizer_args,
             tokenizer_kwargs=tokenizer_kwargs,
@@ -207,9 +226,22 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
         assert torch.equal(output.logits, output_wrapper['logits']), 'Logit tensors do not match.'
+
+    def _test_lora_forward(self, *args, **kwargs):
+        lora_config = LoraConfig(
+            lora_alpha=16,
+            lora_dropout=0.1,
+            r=64,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        self._test_forward(*args, lora_config=lora_config, **kwargs)
         
     def test_gpt2_forward(self):
         self._test_forward('gpt2')
+
+    def test_gpt2_forward_lora(self):
+        self._test_lora_forward('gpt2')
 
     def test_mistral_forward(self):
         self._test_forward(
@@ -280,10 +312,23 @@ class TestCausalLMWrapper(unittest.TestCase):
         input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
         output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
 
-        assert torch.equal(output, output_wrapper['input_ids']), 'Generated token tensors do not match.'
+        assert torch.equal(output, output_wrapper['output_ids']), 'Generated token tensors do not match.'
+
+    def _test_lora_generate(self, *args, **kwargs):
+        lora_config = LoraConfig(
+            lora_alpha=16,
+            lora_dropout=0.1,
+            r=64,
+            bias="none",
+            task_type="CAUSAL_LM",
+        )
+        self._test_generate(*args, lora_config=lora_config, **kwargs)
         
     def test_gpt2_generate(self):
         self._test_generate('gpt2')
+
+    def test_gpt2_generate_lora(self):
+        self._test_lora_generate('gpt2')
 
     def test_mistral_generate(self):
         self._test_generate(
