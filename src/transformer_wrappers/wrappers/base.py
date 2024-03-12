@@ -1,9 +1,8 @@
 import os
-import warnings
 import inspect
 
 from enum import Enum
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Callable
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 import torch
 import torch.nn as nn
@@ -161,6 +160,16 @@ class ModuleWrapper(nn.Module, BaseWrapper):
     @property
     def super_wrapper(self) -> BaseWrapper:
         return self._super_wrapper
+
+    def eval(self):
+        self._module = self._module.eval()
+
+        return self
+
+    def train(self, mode: bool = True):
+        self._module = self._module.train(mode=mode)
+
+        return self
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
@@ -730,12 +739,15 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def __init__(
             self,
             model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer
+            tokenizer: PreTrainedTokenizer,
+            benchmarking: bool = False
     ):
         super().__init__(model.config)  # TODO fixme (find better solution)
         #
         self._model: PreTrainedModel = model
         self._tokenizer: PreTrainedTokenizer = tokenizer
+        #
+        self._banchmarking: bool = benchmarking
 
     @classmethod
     def from_pretrained(
@@ -756,6 +768,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         tokenizer_args = tokenizer_args if tokenizer_args else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
+        model_kwargs['attn_implementation'] = 'eager'  # Make better version
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
@@ -789,14 +802,33 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def tokenizer(self) -> PreTrainedTokenizer:
         return self._tokenizer
 
-
     @property
     def is_training(self) -> bool:
         return self.base_model.training
 
     @property
+    def is_benchmarking(self) -> bool:
+        return self._banchmarking
+
+    @property
     def gradient_checkpointing(self):
         return self.base_model.gradient_checkpointing
+
+    def eval(self):
+        self._model = self._model.eval()
+
+        return self
+
+    def train(self, mode: bool = True):
+        self._model = self._model.train(mode=mode)
+
+        return self
+
+    def enable_benchmarking(self):
+        self._benchmarking = True
+
+    def disable_benchmarking(self):
+        self._benchmarking = False
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
@@ -956,7 +988,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         #
         dtype = self.base_model.dtype
         # Input
-        if (input_ids is None) ^ (input_embeds is not None):
+        if (input_ids is not None) and (input_embeds is not None):
             raise ValueError('Models accept either `input_ids` or `inputs_embeds`, not both.')
         elif input_ids is not None:
             batch_size, seq_length = input_ids.size()
@@ -1186,6 +1218,13 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
         return output
 
+    def _pre_process_input(self, *args, **kwargs):
+        if len(args):
+            input_ids, *_ = args
+            return super()._pre_process_input(*args, input_ids=input_ids, **kwargs)
+        else:
+            return super()._pre_process_input(*args, **kwargs)
+
     def _post_process_output(
             self,
             base_model_output: bool = False,
@@ -1196,6 +1235,8 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return_dict: bool = True,
             **kwargs
     ):
+        base_model_output = base_model_output or self.is_benchmarking
+        #
         if base_model_output:
             if hidden_states is not None:
                 logger.warning(
@@ -1247,7 +1288,9 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
             return kwargs
 
-    def generate(self, *args, return_inner_states: bool = True, **kwargs):
+    def generate(self, *args, return_inner_states: bool = False, **kwargs):
+        return_inner_states = return_inner_states or self.is_benchmarking
+        #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
         if return_inner_states:
@@ -1269,16 +1312,8 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return generate_output
 
     def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
+        # TODO fix Llama and Gemma generation issue
         self.enable_wrapper()
-        # TODO find actual solution
-        # if kwargs.get(POSITION_IDS) is None and isinstance(self.base_model, LlamaPreTrainedModel):
-        #     seq_length = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).size(1)
-        #     device = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).device
-        #     prefix_length = DynamicCache.from_legacy_cache(kwargs.get(PAST_KEY_VALUE)).get_usable_length(seq_length)
-        #     position_ids = torch.arange(
-        #         prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
-        #     ).unsqueeze(0)
-        #     kwargs[POSITION_IDS] = position_ids
         #
         inputs = self.base_model.prepare_inputs_for_generation(
             *args, **kwargs

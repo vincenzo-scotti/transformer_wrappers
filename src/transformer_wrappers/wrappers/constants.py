@@ -56,4 +56,4 @@ BASE_MODEL: str = 'base_model'
 
 ITERATION: str = 'iteration'
 
-OUTPUT_IDS: str = 'input_ids'
+OUTPUT_IDS: str = 'output_ids'
