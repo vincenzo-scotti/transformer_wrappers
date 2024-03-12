@@ -49,6 +49,9 @@ OUT_HIDDEN_STATE: str = 'output_hidden_state'
 ATTN_OUTPUTS: str = 'attention_outputs'
 FFNN_OUTPUTS: str = 'feed_forward_outputs'
 
+ADD_ATTN_RESIDUAL: str = 'add_attn_residual'
+ADD_FFNN_RESIDUAL: str = 'add_ffnn_residual'
+
 RETURN_ATTENTION_OUTPUT: str = 'return_attention_output'
 RETURN_FFNN_OUTPUT: str = 'return_feed_forward_output'
 

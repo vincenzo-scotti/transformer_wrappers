@@ -422,12 +422,8 @@ class LayerWrapper(ModuleWrapper):
     def feed_forward_wrapper(self):
         return self._feed_forward_wrapper
 
-    def _wrapped_forward(
-            self,
-            current_hidden_state: Optional[torch.tensor] = None,
-            add_attn_residual: bool = True,
-            add_ffnn_residual: bool = True,
-            **kwargs
+    def _attn_forward(
+            self, current_hidden_state: Optional[torch.FloatTensor], add_attn_residual: bool = True, **kwargs
     ):
         if current_hidden_state is None:
             raise ValueError()  # TODO add message
@@ -440,9 +436,23 @@ class LayerWrapper(ModuleWrapper):
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.attention_wrapper.module_output)
         if add_attn_residual:
-            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
+            current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
         else:
-            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output]
+            current_hidden_state = attention_output[self.attention_wrapper.module_output]
+        #
+        output = kwargs | {
+            CURR_HIDDEN_STATE: current_hidden_state,
+            ADD_ATTN_RESIDUAL: add_attn_residual,
+            self.attention_wrapper.module_output: attention_output
+        }
+
+        return output
+
+    def _ffnn_forward(self, current_hidden_state, add_ffnn_residual: bool = True, **kwargs):
+        if current_hidden_state is None:
+            raise ValueError()  # TODO add message
+        #
+        residual = current_hidden_state
         # Intermediate Normalisation
         current_hidden_state = self.intermediate_norm.forward(current_hidden_state)
         # Feed-Forward
@@ -455,10 +465,19 @@ class LayerWrapper(ModuleWrapper):
             current_hidden_state = ffnn_output
         # Extend input with module output
         output = kwargs | {
-            self.module_output: current_hidden_state,
-            self.attention_wrapper.module_output: attention_output,
-            self.feed_forward_wrapper.module_output: ffnn_output
+            CURR_HIDDEN_STATE: current_hidden_state,
+            ADD_FFNN_RESIDUAL: add_ffnn_residual,
+            self.attention_wrapper.module_output: ffnn_output
         }
+
+        return output
+
+    def _wrapped_forward(self, skip_attention: bool = False, skip_ffnn: bool = False, **kwargs):
+        output = kwargs
+        output = self._attn_forward(**output)
+        output = self._ffnn_forward(**output)
+        #
+        output |= {self.module_output: output[CURR_HIDDEN_STATE]}
 
         return output
 
