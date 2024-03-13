@@ -467,7 +467,7 @@ class LayerWrapper(ModuleWrapper):
         output = kwargs | {
             CURR_HIDDEN_STATE: current_hidden_state,
             ADD_FFNN_RESIDUAL: add_ffnn_residual,
-            self.attention_wrapper.module_output: ffnn_output
+            self.feed_forward_wrapper.module_output: ffnn_output
         }
 
         return output

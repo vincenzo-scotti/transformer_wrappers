@@ -1,6 +1,8 @@
 import unittest
 import os
 
+import itertools
+
 import torch
 from transformers import AutoTokenizer, AutoModel, AutoModelForCausalLM
 from transformer_wrappers.wrappers import ParallelTransformerWrapper, ParallelCausalLMWrapper
@@ -115,11 +117,15 @@ class TestTransformerWrapper(unittest.TestCase):
                 output_attentions, output_wrapper_attentions
             ), f'`attentions` tensors at layer {i} not matching.'
 
+    def _test_forward_configs(self, *args, **kwargs):
+        for block_parallel, iterative in itertools.product([True, False], [True, False]):
+            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
+
     def test_gpt2_forward(self):
-        self._test_forward('gpt2')
+        self._test_forward_configs('gpt2')
 
     def test_mistral_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'mistralai/Mistral-7B-Instruct-v0.2',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -129,7 +135,7 @@ class TestTransformerWrapper(unittest.TestCase):
         )
 
     def test_gemma_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'google/gemma-7b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -141,7 +147,7 @@ class TestTransformerWrapper(unittest.TestCase):
         )
 
     def test_llama2_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -207,11 +213,15 @@ class TestCausalLMWrapper(unittest.TestCase):
 
         assert torch.equal(output.logits, output_wrapper['logits']), 'Logit tensors do not match.'
 
+    def _test_forward_configs(self, *args, **kwargs):
+        for block_parallel, iterative in itertools.product([True, False], [True, False]):
+            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
+
     def test_gpt2_forward(self):
-        self._test_forward('gpt2')
+        self._test_forward_configs('gpt2')
 
     def test_mistral_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'mistralai/Mistral-7B-Instruct-v0.2',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -221,7 +231,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
     def test_gemma_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'google/gemma-7b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -233,7 +243,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
     def test_llama2_forward(self):
-        self._test_forward(
+        self._test_forward_configs(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -277,15 +287,21 @@ class TestCausalLMWrapper(unittest.TestCase):
             **wrapper_kwargs
         )
         input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
-        output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
+        output_wrapper = model.generate(
+            input_encodings.input_ids, return_inner_states=True, do_sample=False, max_length=16
+        )
 
-        assert torch.equal(output, output_wrapper['input_ids']), 'Generated token tensors do not match.'
+        assert torch.equal(output, output_wrapper['output_ids']), 'Generated token tensors do not match.'
+
+    def _test_generate_configs(self, *args, **kwargs):
+        for block_parallel, iterative in itertools.product([True, False], [True, False]):
+            self._test_generate(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
 
     def test_gpt2_generate(self):
-        self._test_generate('gpt2')
+        self._test_generate_configs('gpt2')
 
     def test_mistral_generate(self):
-        self._test_generate(
+        self._test_generate_configs(
             'mistralai/Mistral-7B-Instruct-v0.2',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -295,7 +311,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
     def test_gemma_generate(self):
-        self._test_generate(
+        self._test_generate_configs(
             'google/gemma-7b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
@@ -307,7 +323,7 @@ class TestCausalLMWrapper(unittest.TestCase):
         )
 
     def test_llama2_generate(self):
-        self._test_generate(
+        self._test_generate_configs(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,

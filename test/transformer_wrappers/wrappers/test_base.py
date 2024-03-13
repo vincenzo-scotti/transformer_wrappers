@@ -310,7 +310,9 @@ class TestCausalLMWrapper(unittest.TestCase):
             **wrapper_kwargs
         )
         input_encodings = model.tokenizer(input_string, return_tensors='pt').to(model.device)
-        output_wrapper = model.generate(input_encodings.input_ids, do_sample=False, max_length=16)
+        output_wrapper = model.generate(
+            input_encodings.input_ids, return_inner_states=True, do_sample=False, max_length=16
+        )
 
         assert torch.equal(output, output_wrapper['output_ids']), 'Generated token tensors do not match.'
 
