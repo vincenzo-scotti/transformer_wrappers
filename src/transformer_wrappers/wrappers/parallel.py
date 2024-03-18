@@ -24,6 +24,7 @@ P_BLOCKS: str = 'p_blocks'
 P_RATE: str = 'p_rate'
 BLOCK_PARALLEL: str = 'block_parallel'
 ITERATIVE: str = 'iterative'
+SCALING: str = 'scaling'
 
 SKIP_ATTENTION: str = 'skip_attention'
 SKIP_FFNN: str = 'skip_ffnn'
@@ -90,8 +91,12 @@ class ParallelLayersWrapper(LayersWrapper):
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             layer_idx: Optional[int] = None,
+            add_attn_residual: bool = True,
+            add_ffnn_residual: bool = True,
             skip_attention: bool = False,
             skip_ffnn: bool = False,
+            block_parallel: bool = False,
+            scaling: bool = True,
             **kwargs
     ):
         #
@@ -99,7 +104,14 @@ class ParallelLayersWrapper(LayersWrapper):
         #
         if layer_output is not None:
             # Current layer output
-            kwargs[self.TMP_HIDDEN_STATE] = kwargs.get(self.TMP_HIDDEN_STATE, list())
+            if scaling:
+                kwargs[self.TMP_HIDDEN_STATE] = kwargs.get(self.TMP_HIDDEN_STATE, list())
+            else:
+                kwargs[self.TMP_HIDDEN_STATE] = kwargs.get(
+                    self.TMP_HIDDEN_STATE, [kwargs[INPUT_HIDDEN_STATE].clone()]
+                )
+                if block_parallel:
+                    kwargs[self.TMP_HIDDEN_STATE].append(layer_output[ATTN_OUTPUT].clone())
             kwargs[self.TMP_HIDDEN_STATE].append(layer_output.pop(CURR_HIDDEN_STATE))
             # Set Current hidden state as input of previous block
             kwargs[CURR_HIDDEN_STATE] = kwargs.pop(INPUT_HIDDEN_STATE)
@@ -123,7 +135,10 @@ class ParallelLayersWrapper(LayersWrapper):
         else:
             # End of block
             # Current hidden state
-            kwargs[CURR_HIDDEN_STATE] = sum(kwargs.pop(self.TMP_HIDDEN_STATE))
+            if scaling:
+                kwargs[CURR_HIDDEN_STATE] = torch.stack(kwargs.pop(self.TMP_HIDDEN_STATE)).mean(dim=0)
+            else:
+                kwargs[CURR_HIDDEN_STATE] = torch.stack(kwargs.pop(self.TMP_HIDDEN_STATE)).sum(dim=0)
             # Hidden states
             if output_hidden_states and not skip_ffnn:
                 kwargs[HIDDEN_STATES].append(kwargs[CURR_HIDDEN_STATE])
@@ -140,13 +155,14 @@ class ParallelLayersWrapper(LayersWrapper):
 
     def _wrapped_forward_iteration(
             self,
-            layer_wrapper_block: Optional[Iterable] = None,
+            layer_wrappers_block: Optional[Iterable] = None,
             p_rate: int = 1,
+            scaling: bool = True,
             block_parallel: bool = True,
             block_idx: int = -1,
             **kwargs
     ):
-        if layer_wrapper_block is None:
+        if layer_wrappers_block is None:
             raise ValueError()
         if block_idx < 0:
             raise ValueError()
@@ -154,39 +170,55 @@ class ParallelLayersWrapper(LayersWrapper):
         output = kwargs
         additional_kwargs = [{SKIP_FFNN: True}, {SKIP_ATTENTION: True}] if not block_parallel else [dict()]
         for add_kwargs in additional_kwargs:
-            for block_layer_idx, layer_wrapper in enumerate(layer_wrapper_block):
+            for block_layer_idx, layer_wrapper in enumerate(layer_wrappers_block):
                 layer_idx = block_idx * p_rate + block_layer_idx
                 #
                 original_layer_idx = None
                 if isinstance(self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
                     original_layer_idx = layer_wrapper.attention_wrapper.base_module.layer_idx
                     layer_wrapper.attention_wrapper.base_module.layer_idx = layer_idx
+                return_attention_output = output.pop(RETURN_ATTENTION_OUTPUT, False)
                 # Apply layer transformation
-                output = layer_wrapper.forward(layer_idx=layer_idx, **add_kwargs, **output)
+                output = layer_wrapper.forward(
+                    layer_idx=layer_idx,
+                    add_attn_residual=scaling or block_parallel,
+                    add_ffnn_residual=scaling,
+                    return_attention_output=return_attention_output or (block_parallel and not scaling),
+                    **add_kwargs,
+                    **output
+                )
                 #
                 if isinstance(self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
                     layer_wrapper.attention_wrapper.base_module.layer_idx = original_layer_idx
+                output[RETURN_ATTENTION_OUTPUT] = return_attention_output
                 # Update model state
-                output = self._update_state(**output)
+                output = self._update_state(block_parallel=block_parallel, scaling=scaling, **output)
             # Update model state
-            output = self._update_state(**add_kwargs, **output)
+            output = self._update_state(
+                scaling=scaling, **add_kwargs, **output
+            )
 
         return output
 
-    def _wrapped_forward(self, p_rate: int = 1, block_parallel: bool = True, iterative: bool = True, **kwargs):
+    def _wrapped_forward(
+            self, p_rate: int = 1, block_parallel: bool = True, iterative: bool = True, scaling: bool = True, **kwargs
+    ):
         output = self._init_state(**kwargs)
         # Iterate over layers
-        for block_idx, layer_wrapper_block in enumerate(self.get_layer_wrappers_iterator(p_rate=p_rate, iterative=iterative)):
+        for block_idx, layer_wrappers_block in enumerate(
+                self.get_layer_wrappers_iterator(p_rate=p_rate, iterative=iterative)
+        ):
             # Compute block output
             output = self._wrapped_forward_iteration(
-                layer_wrapper_block=layer_wrapper_block,
+                layer_wrappers_block=layer_wrappers_block,
                 p_rate=p_rate,
+                scaling=scaling,
                 block_parallel=block_parallel,
                 block_idx=block_idx,
                 **output
             )
         #
-        output |= {P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative}
+        output |= {P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling}
 
         return output
 
@@ -199,16 +231,18 @@ class ParallelTransformerWrapper(TransformerWrapper):
         #
         self.p_blocks: Optional[int] = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(P_BLOCKS)
         self.p_rate: int = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(P_RATE, 1)
-        self.block_parallel: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(BLOCK_PARALLEL)
+        self.block_parallel: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(BLOCK_PARALLEL, False)
         self.iterative: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(ITERATIVE, True)
+        self.scaling: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(SCALING, True)
 
     def _pre_process_input(
             self,
             *args,
             p_blocks: Optional[int] = None,
             p_rate: Optional[int] = None,
-            block_parallel: Optional[bool] = False,
-            iterative: Optional[bool] = True,
+            block_parallel: Optional[bool] = None,
+            iterative: Optional[bool] = None,
+            scaling: Optional[bool] = None,
             **kwargs
     ):
         kwargs = super()._pre_process_input(*args, **kwargs)
@@ -227,8 +261,11 @@ class ParallelTransformerWrapper(TransformerWrapper):
             raise ValueError('`p_rate` must be an integer divisor of `num_hidden_layers`')
         block_parallel = block_parallel if block_parallel is not None else self.block_parallel
         iterative = iterative if iterative is not None else self.iterative
+        scaling = scaling if scaling is not None else self.scaling
         #
-        kwargs |= {P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative}
+        kwargs |= {
+            P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling
+        }
 
         return kwargs
 
@@ -237,10 +274,17 @@ class ParallelCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[PreTrainedModelWrapper] = ParallelTransformerWrapper
 
     def prepare_inputs_for_generation(
-            self, *args, p_blocks: Optional[int] = None, p_rate: Optional[int] = None, iterative: bool = False, **kwargs
+            self,
+            *args,
+            p_blocks: Optional[int] = None,
+            p_rate: Optional[int] = None,
+            block_parallel: Optional[bool] = None,
+            iterative: Optional[bool] = None,
+            scaling: Optional[bool] = None,
+            **kwargs
     ):
         inputs = super().prepare_inputs_for_generation(*args, **kwargs) | {
-            P_BLOCKS: p_blocks, P_RATE: p_rate, ITERATIVE: iterative,
+            P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling
         }
 
         return inputs

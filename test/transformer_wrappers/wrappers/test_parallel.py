@@ -118,8 +118,8 @@ class TestTransformerWrapper(unittest.TestCase):
             ), f'`attentions` tensors at layer {i} not matching.'
 
     def _test_forward_configs(self, *args, **kwargs):
-        for block_parallel, iterative in itertools.product([True, False], [True, False]):
-            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
+        for block_parallel, iterative, scaling in itertools.product([True, False], [True, False], [True, False]):
+            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative, scaling=scaling)
 
     def test_gpt2_forward(self):
         self._test_forward_configs('gpt2')
@@ -214,8 +214,8 @@ class TestCausalLMWrapper(unittest.TestCase):
         assert torch.equal(output.logits, output_wrapper['logits']), 'Logit tensors do not match.'
 
     def _test_forward_configs(self, *args, **kwargs):
-        for block_parallel, iterative in itertools.product([True, False], [True, False]):
-            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
+        for block_parallel, iterative, scaling in itertools.product([True, False], [True, False], [True, False]):
+            self._test_forward(*args, **kwargs, block_parallel=block_parallel, iterative=iterative, scaling=scaling)
 
     def test_gpt2_forward(self):
         self._test_forward_configs('gpt2')
@@ -294,8 +294,8 @@ class TestCausalLMWrapper(unittest.TestCase):
         assert torch.equal(output, output_wrapper['output_ids']), 'Generated token tensors do not match.'
 
     def _test_generate_configs(self, *args, **kwargs):
-        for block_parallel, iterative in itertools.product([True, False], [True, False]):
-            self._test_generate(*args, **kwargs, block_parallel=block_parallel, iterative=iterative)
+        for block_parallel, iterative, scaling in itertools.product([True, False], [True, False], [True, False]):
+            self._test_generate(*args, **kwargs, block_parallel=block_parallel, iterative=iterative, scaling=scaling)
 
     def test_gpt2_generate(self):
         self._test_generate_configs('gpt2')
