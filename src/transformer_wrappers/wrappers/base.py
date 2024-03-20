@@ -825,7 +825,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def is_training(self) -> bool:
         return self.base_model.training
 
-    @property
+    @property  # TODO fixme (not updating)
     def is_benchmarking(self) -> bool:
         return self._banchmarking
 
@@ -1254,7 +1254,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return_dict: bool = True,
             **kwargs
     ):
-        base_model_output = base_model_output or self.is_benchmarking
+        base_model_output = base_model_output or self._benchmarking
         #
         if base_model_output:
             if hidden_states is not None:
@@ -1308,7 +1308,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return kwargs
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
-        return_inner_states = return_inner_states or self.is_benchmarking
+        return_inner_states = return_inner_states or self._benchmarking
         #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
