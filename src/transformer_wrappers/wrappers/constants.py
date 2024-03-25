@@ -39,10 +39,12 @@ CURR_HIDDEN_STATE: str = 'current_hidden_state'
 CURR_KEY_VALUE: str = 'current_key_values'
 CURR_ATTN_WEIGHTS: str = 'current_attention_weights'
 
+INTERMEDIATE_HIDDEN_STATE: str = 'intermediate_hidden_state'
 ATTN_OUTPUT: str = 'attention_output'
 FFNN_OUTPUT: str = 'feed_forward_output'
 
 CACHE: str = 'cache'
+INTERMEDIATE_HIDDEN_STATES: str = 'intermediate_hidden_states'
 ATTN_WEIGHTS: str = 'attention_weights'
 OUT_HIDDEN_STATE: str = 'output_hidden_state'
 
@@ -52,6 +54,7 @@ FFNN_OUTPUTS: str = 'feed_forward_outputs'
 ADD_ATTN_RESIDUAL: str = 'add_attn_residual'
 ADD_FFNN_RESIDUAL: str = 'add_ffnn_residual'
 
+RETURN_INTERMEDIATE_HIDDEN_STATES: str = 'return_intermediate_hidden_state'
 RETURN_ATTENTION_OUTPUT: str = 'return_attention_output'
 RETURN_FFNN_OUTPUT: str = 'return_feed_forward_output'
 

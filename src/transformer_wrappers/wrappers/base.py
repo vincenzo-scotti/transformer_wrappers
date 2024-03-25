@@ -241,6 +241,7 @@ class AttentionWrapper(ModuleWrapper):
 
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
+    intermediate_hidden_state: str = INTERMEDIATE_HIDDEN_STATE
 
     def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
@@ -442,6 +443,7 @@ class LayerWrapper(ModuleWrapper):
         #
         output = kwargs | {
             CURR_HIDDEN_STATE: current_hidden_state,
+            INTERMEDIATE_HIDDEN_STATE: current_hidden_state,
             ADD_ATTN_RESIDUAL: add_attn_residual,
             self.attention_wrapper.module_output: attention_output
         }
@@ -486,6 +488,7 @@ class LayerWrapper(ModuleWrapper):
             base_model_output: bool = False,
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
+            return_intermediate_hidden_states: bool = False,  # Residual + self-attention layer output
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             **kwargs
@@ -512,6 +515,8 @@ class LayerWrapper(ModuleWrapper):
                 output[CURR_ATTN_WEIGHTS] = attention_output[self.attention_wrapper.attention_weights]
             if use_cache:
                 output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
+            if return_intermediate_hidden_states:
+                output[INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_output:
@@ -521,6 +526,7 @@ class LayerWrapper(ModuleWrapper):
                 self.module_output: output,
                 USE_CACHE: use_cache,
                 OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
+                RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
                 RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
                 RETURN_FFNN_OUTPUT: return_feed_forward_output
             }
@@ -582,12 +588,16 @@ class LayersWrapper(ModuleWrapper):
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
+            return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             **kwargs
     ):
         # Current hidden state
         kwargs[CURR_HIDDEN_STATE] = embeddings
+        # Intermediate hidden states
+        if return_intermediate_hidden_states:
+            kwargs[INTERMEDIATE_HIDDEN_STATES] = list()
         # Hidden states
         if output_hidden_states:
             kwargs[HIDDEN_STATES] = [embeddings]
@@ -608,6 +618,7 @@ class LayersWrapper(ModuleWrapper):
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
             OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
@@ -619,6 +630,7 @@ class LayersWrapper(ModuleWrapper):
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
+            return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             layer_idx: int = -1,
@@ -627,6 +639,9 @@ class LayersWrapper(ModuleWrapper):
         layer_output = kwargs.pop(self._layer_dtype.module_output)
         # Current hidden state
         kwargs[CURR_HIDDEN_STATE] = layer_output[CURR_HIDDEN_STATE]
+        # Intermediate hidden states
+        if return_intermediate_hidden_states:
+            kwargs[INTERMEDIATE_HIDDEN_STATES].append(layer_output[INTERMEDIATE_HIDDEN_STATE])
         # Hidden states
         if output_hidden_states:
             kwargs[HIDDEN_STATES].append(layer_output[CURR_HIDDEN_STATE])
@@ -652,6 +667,7 @@ class LayersWrapper(ModuleWrapper):
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
             OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
