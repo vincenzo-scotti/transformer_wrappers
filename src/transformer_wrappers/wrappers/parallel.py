@@ -24,7 +24,8 @@ P_BLOCKS: str = 'p_blocks'
 P_RATE: str = 'p_rate'
 BLOCK_PARALLEL: str = 'block_parallel'
 ITERATIVE: str = 'iterative'
-SCALING: str = 'scaling'
+AVERAGE: str = 'average'
+COMPENSATE_AVG: str = 'compensate_avg'
 
 SKIP_ATTENTION: str = 'skip_attention'
 SKIP_FFNN: str = 'skip_ffnn'
@@ -35,12 +36,84 @@ logger = logging.get_logger(__name__)
 
 class ParallelLayerWrapper(LayerWrapper):
     module_output: str = 'parallel_layer_output'
+    
+    # TODO fixme
+    def _attn_forward(
+            self,
+            current_hidden_state: Optional[torch.FloatTensor],
+            add_attn_residual: bool = True,
+            compensate_avg: bool = False,
+            block_size: int = 1,
+            **kwargs
+    ):
+        if current_hidden_state is None:
+            raise ValueError()  # TODO add message
+        #
+        residual = current_hidden_state
+        # Initial Normalisation
+        current_hidden_state = self.initial_norm.forward(current_hidden_state)
+        # Self attention
+        attention_output = self.attention_wrapper.forward(
+            current_hidden_state=current_hidden_state, **kwargs
+        ).pop(self.attention_wrapper.module_output)
+        if compensate_avg:
+            attention_output[self.attention_wrapper.module_output] *= block_size
+        if add_attn_residual:
+            current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
+        else:
+            current_hidden_state = attention_output[self.attention_wrapper.module_output]
+        #
+        output = kwargs | {
+            CURR_HIDDEN_STATE: current_hidden_state,
+            INTERMEDIATE_HIDDEN_STATE: current_hidden_state,
+            ADD_ATTN_RESIDUAL: add_attn_residual,
+            COMPENSATE_AVG: compensate_avg,
+            self.attention_wrapper.module_output: attention_output
+        }
+
+        return output
+
+    # TODO fixme
+    def _ffnn_forward(
+            self,
+            current_hidden_state,
+            add_ffnn_residual: bool = True,
+            compensate_avg: bool = False,
+            block_size: int = 1,
+            **kwargs
+    ):
+        if current_hidden_state is None:
+            raise ValueError()  # TODO add message
+        #
+        residual = current_hidden_state
+        # Intermediate Normalisation
+        current_hidden_state = self.intermediate_norm.forward(current_hidden_state)
+        # Feed-Forward
+        ffnn_output = self.feed_forward_wrapper.forward(
+            current_hidden_state=current_hidden_state, **kwargs
+        ).pop(self.feed_forward_wrapper.module_output)
+        if compensate_avg:
+            ffnn_output *= block_size
+        if add_ffnn_residual:
+            current_hidden_state = ffnn_output + residual  # TODO verify this
+        else:
+            current_hidden_state = ffnn_output
+        # Extend input with module output
+        output = kwargs | {
+            CURR_HIDDEN_STATE: current_hidden_state,
+            ADD_FFNN_RESIDUAL: add_ffnn_residual,
+            COMPENSATE_AVG: compensate_avg,
+            self.feed_forward_wrapper.module_output: ffnn_output
+        }
+
+        return output
 
     def _wrapped_forward(
             self,
             current_hidden_state: Optional[torch.tensor] = None,
             skip_attention: bool = False,
             skip_ffnn: bool = False,
+            block_size: int = 1,
             **kwargs
     ):
         if skip_attention and skip_ffnn:
@@ -54,11 +127,11 @@ class ParallelLayerWrapper(LayerWrapper):
                 self.attention_wrapper.key_value: None
             }
         else:
-            output = self._attn_forward(**output)
+            output = self._attn_forward(block_size=block_size, **output)
         if skip_ffnn:
             output[self.feed_forward_wrapper.module_output] = None
         else:
-            output = self._ffnn_forward(**output)
+            output = self._ffnn_forward(block_size=block_size, **output)
         #
         output |= {
             INPUT_HIDDEN_STATE: current_hidden_state,
@@ -184,6 +257,7 @@ class ParallelLayersWrapper(LayersWrapper):
                     add_attn_residual=scaling or block_parallel,
                     add_ffnn_residual=scaling,
                     return_attention_output=return_attention_output or (block_parallel and not scaling),
+                    block_size=len(layer_wrappers_block),
                     **add_kwargs,
                     **output
                 )
@@ -218,7 +292,7 @@ class ParallelLayersWrapper(LayersWrapper):
                 **output
             )
         #
-        output |= {P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling}
+        output |= {P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, AVERAGE: scaling}
 
         return output
 
@@ -233,7 +307,8 @@ class ParallelTransformerWrapper(TransformerWrapper):
         self.p_rate: int = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(P_RATE, 1)
         self.block_parallel: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(BLOCK_PARALLEL, False)
         self.iterative: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(ITERATIVE, True)
-        self.scaling: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(SCALING, True)
+        self.average: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(AVERAGE, True)
+        self.compensate_avg: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(COMPENSATE_AVG, False)
 
     def _pre_process_input(
             self,
@@ -242,7 +317,8 @@ class ParallelTransformerWrapper(TransformerWrapper):
             p_rate: Optional[int] = None,
             block_parallel: Optional[bool] = None,
             iterative: Optional[bool] = None,
-            scaling: Optional[bool] = None,
+            average: Optional[bool] = None,
+            compensate_avg: Optional[bool] = None,
             **kwargs
     ):
         kwargs = super()._pre_process_input(*args, **kwargs)
@@ -261,10 +337,16 @@ class ParallelTransformerWrapper(TransformerWrapper):
             raise ValueError('`p_rate` must be an integer divisor of `num_hidden_layers`')
         block_parallel = block_parallel if block_parallel is not None else self.block_parallel
         iterative = iterative if iterative is not None else self.iterative
-        scaling = scaling if scaling is not None else self.scaling
+        average = average if average is not None else self.average
+        compensate_avg = compensate_avg if compensate_avg is not None else self.compensate_avg
         #
         kwargs |= {
-            P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling
+            P_BLOCKS: p_blocks,
+            P_RATE: p_rate,
+            BLOCK_PARALLEL: block_parallel,
+            ITERATIVE: iterative,
+            AVERAGE: average,
+            COMPENSATE_AVG: compensate_avg
         }
 
         return kwargs
@@ -280,11 +362,17 @@ class ParallelCausalLMWrapper(CausalLMWrapper):
             p_rate: Optional[int] = None,
             block_parallel: Optional[bool] = None,
             iterative: Optional[bool] = None,
-            scaling: Optional[bool] = None,
+            average: Optional[bool] = None,
+            compensate_avg: Optional[bool] = None,
             **kwargs
     ):
         inputs = super().prepare_inputs_for_generation(*args, **kwargs) | {
-            P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, SCALING: scaling
+            P_BLOCKS: p_blocks,
+            P_RATE: p_rate,
+            BLOCK_PARALLEL: block_parallel,
+            ITERATIVE: iterative,
+            AVERAGE: average,
+            COMPENSATE_AVG: compensate_avg
         }
 
         return inputs
