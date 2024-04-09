@@ -1,9 +1,8 @@
 import os
-import warnings
 import inspect
 
 from enum import Enum
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Callable
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 import torch
 import torch.nn as nn
@@ -162,6 +161,16 @@ class ModuleWrapper(nn.Module, BaseWrapper):
     def super_wrapper(self) -> BaseWrapper:
         return self._super_wrapper
 
+    def eval(self):
+        self._module = self._module.eval()
+
+        return self
+
+    def train(self, mode: bool = True):
+        self._module = self._module.train(mode=mode)
+
+        return self
+
     def _wrapped_forward(self, **kwargs):
         # Model forward
         module_output = self.base_module.forward(**kwargs)
@@ -232,6 +241,7 @@ class AttentionWrapper(ModuleWrapper):
 
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
+    intermediate_hidden_state: str = INTERMEDIATE_HIDDEN_STATE
 
     def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
@@ -413,12 +423,8 @@ class LayerWrapper(ModuleWrapper):
     def feed_forward_wrapper(self):
         return self._feed_forward_wrapper
 
-    def _wrapped_forward(
-            self,
-            current_hidden_state: Optional[torch.tensor] = None,
-            add_attn_residual: bool = True,
-            add_ffnn_residual: bool = True,
-            **kwargs
+    def _attn_forward(
+            self, current_hidden_state: Optional[torch.FloatTensor], add_attn_residual: bool = True, **kwargs
     ):
         if current_hidden_state is None:
             raise ValueError()  # TODO add message
@@ -431,9 +437,24 @@ class LayerWrapper(ModuleWrapper):
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.attention_wrapper.module_output)
         if add_attn_residual:
-            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output] + residual
+            current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
         else:
-            current_hidden_state = residual = attention_output[self.attention_wrapper.module_output]
+            current_hidden_state = attention_output[self.attention_wrapper.module_output]
+        #
+        output = kwargs | {
+            CURR_HIDDEN_STATE: current_hidden_state,
+            INTERMEDIATE_HIDDEN_STATE: current_hidden_state,
+            ADD_ATTN_RESIDUAL: add_attn_residual,
+            self.attention_wrapper.module_output: attention_output
+        }
+
+        return output
+
+    def _ffnn_forward(self, current_hidden_state, add_ffnn_residual: bool = True, **kwargs):
+        if current_hidden_state is None:
+            raise ValueError()  # TODO add message
+        #
+        residual = current_hidden_state
         # Intermediate Normalisation
         current_hidden_state = self.intermediate_norm.forward(current_hidden_state)
         # Feed-Forward
@@ -446,10 +467,19 @@ class LayerWrapper(ModuleWrapper):
             current_hidden_state = ffnn_output
         # Extend input with module output
         output = kwargs | {
-            self.module_output: current_hidden_state,
-            self.attention_wrapper.module_output: attention_output,
+            CURR_HIDDEN_STATE: current_hidden_state,
+            ADD_FFNN_RESIDUAL: add_ffnn_residual,
             self.feed_forward_wrapper.module_output: ffnn_output
         }
+
+        return output
+
+    def _wrapped_forward(self, skip_attention: bool = False, skip_ffnn: bool = False, **kwargs):
+        output = kwargs
+        output = self._attn_forward(**output)
+        output = self._ffnn_forward(**output)
+        #
+        output |= {self.module_output: output[CURR_HIDDEN_STATE]}
 
         return output
 
@@ -458,6 +488,7 @@ class LayerWrapper(ModuleWrapper):
             base_model_output: bool = False,
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
+            return_intermediate_hidden_states: bool = False,  # Residual + self-attention layer output
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             **kwargs
@@ -484,6 +515,8 @@ class LayerWrapper(ModuleWrapper):
                 output[CURR_ATTN_WEIGHTS] = attention_output[self.attention_wrapper.attention_weights]
             if use_cache:
                 output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
+            if return_intermediate_hidden_states:
+                output[INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_output:
@@ -493,6 +526,7 @@ class LayerWrapper(ModuleWrapper):
                 self.module_output: output,
                 USE_CACHE: use_cache,
                 OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
+                RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
                 RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
                 RETURN_FFNN_OUTPUT: return_feed_forward_output
             }
@@ -554,12 +588,16 @@ class LayersWrapper(ModuleWrapper):
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
+            return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             **kwargs
     ):
         # Current hidden state
         kwargs[CURR_HIDDEN_STATE] = embeddings
+        # Intermediate hidden states
+        if return_intermediate_hidden_states:
+            kwargs[INTERMEDIATE_HIDDEN_STATES] = list()
         # Hidden states
         if output_hidden_states:
             kwargs[HIDDEN_STATES] = [embeddings]
@@ -580,6 +618,7 @@ class LayersWrapper(ModuleWrapper):
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
             OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
@@ -591,6 +630,7 @@ class LayersWrapper(ModuleWrapper):
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
+            return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_output: bool = False,
             layer_idx: int = -1,
@@ -599,6 +639,9 @@ class LayersWrapper(ModuleWrapper):
         layer_output = kwargs.pop(self._layer_dtype.module_output)
         # Current hidden state
         kwargs[CURR_HIDDEN_STATE] = layer_output[CURR_HIDDEN_STATE]
+        # Intermediate hidden states
+        if return_intermediate_hidden_states:
+            kwargs[INTERMEDIATE_HIDDEN_STATES].append(layer_output[INTERMEDIATE_HIDDEN_STATE])
         # Hidden states
         if output_hidden_states:
             kwargs[HIDDEN_STATES].append(layer_output[CURR_HIDDEN_STATE])
@@ -624,6 +667,7 @@ class LayersWrapper(ModuleWrapper):
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
             OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
@@ -730,12 +774,15 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def __init__(
             self,
             model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer
+            tokenizer: PreTrainedTokenizer,
+            benchmarking: bool = False
     ):
         super().__init__(model.config)  # TODO fixme (find better solution)
         #
         self._model: PreTrainedModel = model
         self._tokenizer: PreTrainedTokenizer = tokenizer
+        #
+        self._banchmarking: bool = benchmarking
 
     @classmethod
     def from_pretrained(
@@ -756,6 +803,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         tokenizer_args = tokenizer_args if tokenizer_args else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
+        model_kwargs['attn_implementation'] = 'eager'  # Make better version
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
@@ -789,14 +837,33 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def tokenizer(self) -> PreTrainedTokenizer:
         return self._tokenizer
 
-
     @property
     def is_training(self) -> bool:
         return self.base_model.training
 
+    @property  # TODO fixme (not updating)
+    def is_benchmarking(self) -> bool:
+        return self._banchmarking
+
     @property
     def gradient_checkpointing(self):
         return self.base_model.gradient_checkpointing
+
+    def eval(self):
+        self._model = self._model.eval()
+
+        return self
+
+    def train(self, mode: bool = True):
+        self._model = self._model.train(mode=mode)
+
+        return self
+
+    def enable_benchmarking(self):
+        self._benchmarking = True
+
+    def disable_benchmarking(self):
+        self._benchmarking = False
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
@@ -956,7 +1023,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         #
         dtype = self.base_model.dtype
         # Input
-        if (input_ids is None) ^ (input_embeds is not None):
+        if (input_ids is not None) and (input_embeds is not None):
             raise ValueError('Models accept either `input_ids` or `inputs_embeds`, not both.')
         elif input_ids is not None:
             batch_size, seq_length = input_ids.size()
@@ -1186,6 +1253,13 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
         return output
 
+    def _pre_process_input(self, *args, **kwargs):
+        if len(args):
+            input_ids, *_ = args
+            return super()._pre_process_input(*args, input_ids=input_ids, **kwargs)
+        else:
+            return super()._pre_process_input(*args, **kwargs)
+
     def _post_process_output(
             self,
             base_model_output: bool = False,
@@ -1196,6 +1270,8 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return_dict: bool = True,
             **kwargs
     ):
+        base_model_output = base_model_output or self._benchmarking
+        #
         if base_model_output:
             if hidden_states is not None:
                 logger.warning(
@@ -1247,7 +1323,9 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
             return kwargs
 
-    def generate(self, *args, return_inner_states: bool = True, **kwargs):
+    def generate(self, *args, return_inner_states: bool = False, **kwargs):
+        return_inner_states = return_inner_states or self._benchmarking
+        #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
         if return_inner_states:
@@ -1269,16 +1347,8 @@ class CausalLMWrapper(PreTrainedModelWrapper):
             return generate_output
 
     def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
+        # TODO fix Llama and Gemma generation issue
         self.enable_wrapper()
-        # TODO find actual solution
-        # if kwargs.get(POSITION_IDS) is None and isinstance(self.base_model, LlamaPreTrainedModel):
-        #     seq_length = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).size(1)
-        #     device = kwargs.get(INPUT_IDS, kwargs.get(INPUT_EMBEDS, args[0])).device
-        #     prefix_length = DynamicCache.from_legacy_cache(kwargs.get(PAST_KEY_VALUE)).get_usable_length(seq_length)
-        #     position_ids = torch.arange(
-        #         prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
-        #     ).unsqueeze(0)
-        #     kwargs[POSITION_IDS] = position_ids
         #
         inputs = self.base_model.prepare_inputs_for_generation(
             *args, **kwargs

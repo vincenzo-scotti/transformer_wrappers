@@ -77,6 +77,9 @@ conda activate trwrap
 # Install required packages
 conda install cuda -c nvidia
 pip install -r requirements.txt
+git clone https://github.com/EleutherAI/lm-evaluation-harness
+cd lm-evaluation-harness
+pip install -e .
 ```
 
 To add the source code directory(ies) to the Python path, you can add this line to the file `~/.bashrc`
