@@ -8,6 +8,8 @@ from bigbench.models import model_utils
 from transformer_wrappers.wrappers import TransformerWrapper, CausalLMWrapper
 from transformer_wrappers.wrappers.constants import *
 
+# TODO test
+
 
 class BigBenchModel(Model):
     # Code adapted from https://github.com/google/BIG-bench/blob/main/bigbench/models/huggingface_models.py
