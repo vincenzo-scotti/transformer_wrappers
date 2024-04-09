@@ -1,0 +1,66 @@
+# Main
+experiment_series: train_char_adapter
+experiment_id: ...  # [madel name]_[model size]
+experiments_dir_path: ./experiments/
+random_seed: 42
+log_file: true
+log_level: INFO
+# Trainer
+trainer:
+  # accumulate_grad_batches: 32
+  # precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
+  gradient_clip_val: 1.0  # Gradient clipping
+  max_epochs: 10  # Number of training epochs
+# Target (L)LM
+lm:
+  pretrained_model_name_or_path:
+    &model  ...  # HuggingFace pre-trained transformer
+  model_kwargs: &model_kwargs
+    # torch_dtype: torch.bfloat16
+    attn_implementation': eager
+    device_map: cpu
+    # token: &hf_token ... # HuggingFace Token
+  tokenizer_kwargs: &tokenizer_kwargs
+    seq_len: 4096
+    # token: *hf_token # HuggingFace Token
+# TokeNN
+tokenn:
+  # Loading
+  pretrained_model_name_or_path: *model
+  init_embeddings: true
+  model_kwargs: *model_kwargs
+  tokenizer_kwargs: *tokenizer_kwargs
+  # Model internal parameters
+  optimiser__lr: 6.25e-5  # Learning rate
+  # optimiser__scale_parameter: false  # Used by AdaFactor
+  # optimiser__relative_step: false  # Used by AdaFactor
+# Data
+data:
+  splits:
+    - train
+    - validation
+    - test
+  params:
+    max_sequence_len: 4096
+  loader:  # Data loader parameters
+    train:
+      batch_size: 32
+      num_workers: &workers 4
+    validation:
+      batch_size: &eval_bs 32
+      num_workers: *workers
+    test:
+      batch_size: *eval_bs
+      num_workers: *workers
+# Callbacks
+callbacks:
+  early_stopping:
+    monitor: &estop_monitor Loss/Validation
+    mode: &estop_mode min
+    patience: 5  # Early stopping patience
+    min_delta: 1.e-3  # Minimum metric variation
+    verbose: true
+  checkpoint_callback:
+    monitor: *estop_monitor
+    mode: *estop_mode
+    # save_top_k: 1

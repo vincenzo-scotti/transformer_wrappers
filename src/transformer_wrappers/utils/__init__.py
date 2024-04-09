@@ -1,1 +1,1 @@
-
+from .scripting import init_training_environment
