@@ -1,3 +1,5 @@
+import math
+
 from itertools import batched, chain, repeat
 from typing import Type, Optional, Iterable, Dict
 
@@ -169,7 +171,7 @@ class ParallelLayersWrapper(LayersWrapper):
             skip_attention: bool = False,
             skip_ffnn: bool = False,
             block_parallel: bool = False,
-            scaling: bool = True,
+            average: bool = True,
             **kwargs
     ):
         #
@@ -177,7 +179,7 @@ class ParallelLayersWrapper(LayersWrapper):
         #
         if layer_output is not None:
             # Current layer output
-            if scaling:
+            if average:
                 kwargs[self.TMP_HIDDEN_STATE] = kwargs.get(self.TMP_HIDDEN_STATE, list())
             else:
                 kwargs[self.TMP_HIDDEN_STATE] = kwargs.get(
@@ -208,7 +210,7 @@ class ParallelLayersWrapper(LayersWrapper):
         else:
             # End of block
             # Current hidden state
-            if scaling:
+            if average:
                 kwargs[CURR_HIDDEN_STATE] = torch.stack(kwargs.pop(self.TMP_HIDDEN_STATE)).mean(dim=0)
             else:
                 kwargs[CURR_HIDDEN_STATE] = torch.stack(kwargs.pop(self.TMP_HIDDEN_STATE)).sum(dim=0)
@@ -230,9 +232,10 @@ class ParallelLayersWrapper(LayersWrapper):
             self,
             layer_wrappers_block: Optional[Iterable] = None,
             p_rate: int = 1,
-            scaling: bool = True,
+            average: bool = True,
             block_parallel: bool = True,
             block_idx: int = -1,
+            iterative: bool = False,
             **kwargs
     ):
         if layer_wrappers_block is None:
@@ -244,7 +247,10 @@ class ParallelLayersWrapper(LayersWrapper):
         additional_kwargs = [{SKIP_FFNN: True}, {SKIP_ATTENTION: True}] if not block_parallel else [dict()]
         for add_kwargs in additional_kwargs:
             for block_layer_idx, layer_wrapper in enumerate(layer_wrappers_block):
-                layer_idx = block_idx * p_rate + block_layer_idx
+                if p_rate == len(layer_wrappers_block) or not iterative:
+                    layer_idx = block_idx * p_rate + block_layer_idx
+                else:
+                    layer_idx = ((block_idx - ()) * p_rate) + (() ) + block_layer_idx
                 #
                 original_layer_idx = None
                 if isinstance(self.super_wrapper.base_model, SHARED_STRUCTURE_MODELS):
@@ -254,9 +260,9 @@ class ParallelLayersWrapper(LayersWrapper):
                 # Apply layer transformation
                 output = layer_wrapper.forward(
                     layer_idx=layer_idx,
-                    add_attn_residual=scaling or block_parallel,
-                    add_ffnn_residual=scaling,
-                    return_attention_output=return_attention_output or (block_parallel and not scaling),
+                    add_attn_residual=average or block_parallel,
+                    add_ffnn_residual=average,
+                    return_attention_output=return_attention_output or (block_parallel and not average),
                     block_size=len(layer_wrappers_block),
                     **add_kwargs,
                     **output
@@ -266,16 +272,22 @@ class ParallelLayersWrapper(LayersWrapper):
                     layer_wrapper.attention_wrapper.base_module.layer_idx = original_layer_idx
                 output[RETURN_ATTENTION_OUTPUT] = return_attention_output
                 # Update model state
-                output = self._update_state(block_parallel=block_parallel, scaling=scaling, **output)
+                output = self._update_state(block_parallel=block_parallel, average=average, **output)
             # Update model state
             output = self._update_state(
-                scaling=scaling, **add_kwargs, **output
+                average=average, **add_kwargs, **output
             )
 
         return output
 
     def _wrapped_forward(
-            self, p_rate: int = 1, block_parallel: bool = True, iterative: bool = True, scaling: bool = True, **kwargs
+            self, 
+            p_blocks: int = 1, 
+            p_rate: int = 1, 
+            block_parallel: bool = True, 
+            iterative: bool = True, 
+            average: bool = True, 
+            **kwargs
     ):
         output = self._init_state(**kwargs)
         # Iterate over layers
@@ -285,14 +297,18 @@ class ParallelLayersWrapper(LayersWrapper):
             # Compute block output
             output = self._wrapped_forward_iteration(
                 layer_wrappers_block=layer_wrappers_block,
+                p_blocks=p_blocks,
                 p_rate=p_rate,
-                scaling=scaling,
+                average=average,
                 block_parallel=block_parallel,
                 block_idx=block_idx,
+                iterative=iterative,
                 **output
             )
         #
-        output |= {P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, AVERAGE: scaling}
+        output |= {
+            P_BLOCKS: p_blocks, P_RATE: p_rate, BLOCK_PARALLEL: block_parallel, ITERATIVE: iterative, AVERAGE: average
+        }
 
         return output
 
@@ -327,14 +343,16 @@ class ParallelTransformerWrapper(TransformerWrapper):
             raise ValueError('Parallel wrappers accept either `p_blocks` or `p_rate`, not both.')
         p_blocks = self.p_blocks if p_blocks is None else p_blocks
         if p_blocks is not None:
-            if self.config.num_hidden_layers % p_blocks != 0:
-                raise ValueError('`p_blocks` must be an integer divisor of `num_hidden_layers`')
-            else:
-                p_rate = self.config.num_hidden_layers // p_blocks
+            # if self.config.num_hidden_layers % p_blocks != 0:
+            #     raise ValueError('`p_blocks` must be an integer divisor of `num_hidden_layers`')
+            # else:
+            #     p_rate = self.config.num_hidden_layers // p_blocks
+            p_rate = int(math.ceil(self.config.num_hidden_layers / p_blocks))
         p_rate = self.p_rate if p_rate is None else p_rate
-        p_blocks = p_blocks if p_blocks is not None else self.config.num_hidden_layers // p_rate
-        if p_rate * p_blocks != self.config.num_hidden_layers:
-            raise ValueError('`p_rate` must be an integer divisor of `num_hidden_layers`')
+        # p_blocks = p_blocks if p_blocks is not None else self.config.num_hidden_layers // p_rate
+        p_blocks = p_blocks if p_blocks is not None else int(math.ceil(self.config.num_hidden_layers / p_rate))
+        # if p_rate * p_blocks != self.config.num_hidden_layers:
+        #     raise ValueError('`p_rate` must be an integer divisor of `num_hidden_layers`')
         block_parallel = block_parallel if block_parallel is not None else self.block_parallel
         iterative = iterative if iterative is not None else self.iterative
         average = average if average is not None else self.average
