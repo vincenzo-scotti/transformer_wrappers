@@ -12,7 +12,7 @@ import torchmetrics
 from transformers import AutoTokenizer, AutoConfig
 from transformers import logging
 
-from typing import Tuple, Optional, Dict, Set, Union, Iterable, Literal, List
+from typing import Tuple, Optional, Dict, Set, Union, Iterable, Literal, List, Pattern
 
 from .base import TransformerWrapper
 
@@ -24,6 +24,8 @@ logger = logging.get_logger(__name__)
 
 
 class CharTokenizer:
+    escaped_tokens_regex: Pattern[str] = re.compile(r'<0x(\w\w)>')
+
     def __init__(self, vocabulary: Set[str], special_tokens_map: Dict[str, str]):
         #
         self.vocabulary: Set[str] = vocabulary
@@ -32,7 +34,7 @@ class CharTokenizer:
         self.encoder: Dict[str, int] = dict(zip(self.decoder, range(len(self.decoder))))
         #
         special_tokens_pattern = '|'.join(re.escape(s) for s in set(special_tokens_map.values()))
-        tokens_pattern = f'({special_tokens_pattern}|.{{1}})'
+        tokens_pattern = f'({special_tokens_pattern}|.{{1}}|\n{{1}})'
         self.tokenizer_regex = re.compile(tokens_pattern, flags=re.UNICODE)
 
     @property
@@ -75,6 +77,9 @@ class CharTokenizer:
     def cls_token_id(self):
         return self.encoder.get(self.cls_token)
 
+    def __len__(self):
+        return len(self.vocabulary) + len(self.special_tokens_map)
+
     def __call__(self, *args, **kwargs):
         return self.encode(*args, **kwargs)
 
@@ -89,7 +94,7 @@ class CharTokenizer:
             text = text.replace(' ', '▁')
             tokens = self.tokenizer_regex.findall(text)
 
-            ids = [self.encoder[token] for token in tokens]
+            ids = [self.encoder.get(token, self.unk_token_id) for token in tokens]
             valid_mask = [1] * len(ids)
         else:
             ids, valid_mask = list(zip(*[self.encode(text_).values() for text_ in text]))
@@ -194,6 +199,7 @@ class CharTokenizer:
 
         return out_gate
 
+
 class TokeNN(L.LightningModule):
     # TODO create custom tokeniser class
     def __init__(
@@ -207,7 +213,7 @@ class TokeNN(L.LightningModule):
         #
         self.char_tokenizer = CharTokenizer(vocabulary, special_tokens_map)
         #
-        self.embedding = nn.Embedding(len(vocabulary), hidden_size)
+        self.embedding = nn.Embedding(len(self.char_tokenizer), hidden_size)
         self.output = nn.Linear(hidden_size, 1)
         #
         self.metrics: Optional[Dict[str, torchmetrics.Metric]] = None
@@ -232,7 +238,14 @@ class TokeNN(L.LightningModule):
         configs = AutoConfig.from_pretrained(pretrained_model_name_or_path)
         tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
         tokenn = cls(
-            set(tok for tok in tokenizer.vocab if len(tok) == 1),
+            set(
+                [tok for tok in tokenizer.vocab if len(tok) == 1] +
+                [
+                    chr(int(CharTokenizer.escaped_tokens_regex.match('<0x0A>')[1], 16))
+                    for tok in tokenizer.vocab
+                    if CharTokenizer.escaped_tokens_regex.match(tok)
+                ]
+            ),  # ,
             tokenizer.special_tokens_map,
             configs.hidden_size,
             **kwargs
@@ -338,13 +351,13 @@ class TokeNN(L.LightningModule):
     def _step(
             self,
             split,
-            mini_batch: Tuple[Dict[torch.tensor, torch.tensor], torch.tensor, torch.tensor, torch.tensor],
+            mini_batch: Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor],
             mini_batch_idx: int
     ):
         # Unpack mini-batch
-        input_encodings, tgt_embeddings, tgt_out_gate, tgt_attention_mask = mini_batch
+        input_ids, valid_mask, tgt_embeddings, tgt_out_gate, tgt_attention_mask = mini_batch
         # Compute output
-        outputs = self.forward(**input_encodings, out_gate=tgt_out_gate)
+        outputs = self.forward(input_ids, valid_mask=valid_mask, out_gate=tgt_out_gate)
         embeddings, out_gate_logits = outputs
         # Compute loss
         embedding_loss = F.mse_loss(
@@ -366,7 +379,10 @@ class TokeNN(L.LightningModule):
         return loss
 
     def _eval_step(
-            self, split, mini_batch: Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor], mini_batch_idx: int
+            self,
+            split,
+            mini_batch: Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor],
+            mini_batch_idx: int
     ) -> torch.tensor:
         # Unpack mini-batch
         *_, tgt_out_gate, _ = mini_batch
