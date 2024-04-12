@@ -25,12 +25,12 @@ def main(args: Namespace):
     # Start logging info
     logging.info("Script started and configuration file loaded")
     # Load target (L)LM embedding weights and tokeniser
-    transformer = TransformerWrapper.from_pretrained(**configs['lm']['model'])
+    transformer = TransformerWrapper.from_pretrained(**configs['lm'])
     embeddings = transformer.embedding
     tokenizer = transformer.tokenizer
     del transformer  # TODO find better solution
     # Create NN
-    tokenn: TokeNN = TokeNN.from_pretrained(*configs['tokenn']['args'], **configs['tokenn']['kwargs'])
+    tokenn: TokeNN = TokeNN.from_pretrained(**configs['tokenn'])
     tokenn.configure_metrics()
     # Start Logging info
     logging.info("Neural network loaded")
@@ -41,7 +41,7 @@ def main(args: Namespace):
             embeddings,
             tokenizer,
             tokenn.char_tokenizer,
-            **configs['data']['params']
+            **configs['data'].get('params', dict())
         )
         for split in configs['data']['splits']
     }

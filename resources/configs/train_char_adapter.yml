@@ -1,6 +1,6 @@
 # Main
 experiment_series: train_char_adapter
-experiment_id: ...  # [madel name]_[model size]
+experiment_id: Mistral-7B-Instruct-v0.2  # [madel name]_[model size]
 experiments_dir_path: ./experiments/
 random_seed: 42
 log_file: true
@@ -14,14 +14,15 @@ trainer:
 # Target (L)LM
 lm:
   pretrained_model_name_or_path:
-    &model  ...  # HuggingFace pre-trained transformer
+    &model  mistralai/Mistral-7B-Instruct-v0.2  # HuggingFace pre-trained transformer
   model_kwargs: &model_kwargs
     # torch_dtype: torch.bfloat16
-    attn_implementation': eager
+    # attn_implementation': eager
     device_map: cpu
     # token: &hf_token ... # HuggingFace Token
   tokenizer_kwargs: &tokenizer_kwargs
     seq_len: 4096
+    pad_token: </s>
     # token: *hf_token # HuggingFace Token
 # TokeNN
 tokenn:
@@ -40,8 +41,6 @@ data:
     - train
     - validation
     - test
-  params:
-    max_sequence_len: 4096
   loader:  # Data loader parameters
     train:
       batch_size: 32
