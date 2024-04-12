@@ -35,7 +35,7 @@ def main(args: Namespace):
     # Start Logging info
     logging.info("Neural network loaded")
     # Create data set splits
-    data_splits: Dict[str, TokeNNDataset] = {  # TODO data loading, tokenisation, special tokens, configs file
+    data_splits: Dict[str, TokeNNDataset] = {
         split: TokeNNDataset(
             split,
             embeddings,

@@ -78,7 +78,7 @@ class CharTokenizer:
         return self.encoder.get(self.cls_token)
 
     def __len__(self):
-        return len(self.vocabulary) + len(self.special_tokens_map)
+        return len(self.vocabulary) + len(set(self.special_tokens_map.values()))
 
     def __call__(self, *args, **kwargs):
         return self.encode(*args, **kwargs)
@@ -230,18 +230,22 @@ class TokeNN(L.LightningModule):
     ):
         assert weights_path is None or init_embeddings is None
 
-        model_args = kwargs.pop('model_args', None)
-        model_kwargs = kwargs.pop('model_kwargs', None)
-        tokenizer_args = kwargs.pop('tokenizer_args', None)
-        tokenizer_kwargs = kwargs.pop('tokenizer_kwargs', None)
+        model_args = kwargs.pop('model_args', tuple())
+        model_kwargs = kwargs.pop('model_kwargs', dict())
+        tokenizer_args = kwargs.pop('tokenizer_args', tuple())
+        tokenizer_kwargs = kwargs.pop('tokenizer_kwargs', dict())
 
-        configs = AutoConfig.from_pretrained(pretrained_model_name_or_path)
-        tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
+        configs = AutoConfig.from_pretrained(
+            pretrained_model_name_or_path, *model_args, **model_kwargs
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            pretrained_model_name_or_path, *tokenizer_args, **tokenizer_kwargs
+        )
         tokenn = cls(
             set(
                 [tok for tok in tokenizer.vocab if len(tok) == 1] +
                 [
-                    chr(int(CharTokenizer.escaped_tokens_regex.match('<0x0A>')[1], 16))
+                    chr(int(CharTokenizer.escaped_tokens_regex.match(tok)[1], 16))
                     for tok in tokenizer.vocab
                     if CharTokenizer.escaped_tokens_regex.match(tok)
                 ]
@@ -264,9 +268,10 @@ class TokeNN(L.LightningModule):
                 tokenizer_args=tokenizer_args,
                 tokenizer_kwargs=tokenizer_kwargs
             ).embedding
-            ids = tokenizer(tokenn.char_tokenizer.decoder, return_tensors='pt', padding=True).input_ids.reshape(-1)
             with torch.no_grad():
-                tokenn.embedding.weight[:] = initial_embeddings[ids]
+                tokenn.embedding.weight[:] = initial_embeddings(
+                    torch.tensor(tokenizer.convert_tokens_to_ids(tokenn.char_tokenizer.decoder))
+                )
 
         return tokenn
 

@@ -75,7 +75,7 @@ class TokeNNDataset(Dataset):
         tgt_out_gate = self.char_tokenizer.get_out_gate(
             [
                 [
-                    chr(int(CharTokenizer.escaped_tokens_regex.match('<0x0A>')[1], 16))
+                    chr(int(CharTokenizer.escaped_tokens_regex.match(s)[1], 16))
                     if CharTokenizer.escaped_tokens_regex.match(s)
                     else s
                     for s in self.tokenizer.convert_ids_to_tokens(input_ids)
