@@ -8,6 +8,7 @@ import torch.nn.functional as F
 import lightning as L
 
 import torchmetrics
+from torchmetrics import MetricCollection
 
 from transformers import AutoTokenizer, AutoConfig
 from transformers import logging
@@ -214,9 +215,14 @@ class TokeNN(L.LightningModule):
         self.char_tokenizer = CharTokenizer(vocabulary, special_tokens_map)
         #
         self.embedding = nn.Embedding(len(self.char_tokenizer), hidden_size)
-        self.output = nn.Linear(hidden_size, 1)
+        self.seq = nn.GRUCell(hidden_size, hidden_size)
+        self.output = nn.Sequential([
+            nn.Linear(hidden_size, hidden_size * 4),
+            nn.GELU(),
+            nn.Linear(hidden_size, 1)
+        ])
         #
-        self.metrics: Optional[Dict[str, torchmetrics.Metric]] = None
+        self.metrics: Optional[MetricCollection] = None
         #
         self.additional_parameters: Dict = kwargs
 
@@ -284,14 +290,14 @@ class TokeNN(L.LightningModule):
         return optimiser
 
     def configure_metrics(self):
-        self.metrics = {
-            'Accuracy': torchmetrics.Accuracy('binary'),
-            'Precision': torchmetrics.Precision('binary'),
-            'Recall': torchmetrics.Recall('binary'),
-            'Specificity': torchmetrics.Specificity('binary'),
-            'F1': torchmetrics.F1Score('binary'),
-            'Calibration Error': torchmetrics.CalibrationError('binary')
-        }
+        self.metrics = MetricCollection([
+            torchmetrics.Accuracy('binary'),
+            torchmetrics.Precision('binary'),
+            torchmetrics.Recall('binary'),
+            torchmetrics.Specificity('binary'),
+            torchmetrics.F1Score('binary'),
+            torchmetrics.CalibrationError('binary')
+        ])
 
     def forward(
             self,
@@ -307,16 +313,18 @@ class TokeNN(L.LightningModule):
         if out_gate is not None:
             out_gate = out_gate.bool()
 
-        h: torch.tensor = self.embedding(input_ids)
+        e: torch.tensor = self.embedding(input_ids)
+        h = torch.zeros_like(e[:, 0, :])
 
         out_gate_logits = list()
         embeddings = [list() for _ in range(input_ids.size(0))]
-        for i in range(h.size(1)):
+        for i in range(e.size(1)):
             if i > 0:
-                mask = ~(out_gate[:, i - 1] if out_gate is not None else out_gate_logits[i - 1] > 0) & valid_mask[:, i]
-                h[mask, i] += h[mask, i - 1]
-            out_gate_logits.append(self.output(h[:, i]).squeeze(-1))
-            if i < h.size(1) - 1:
+                mask = (out_gate[:, i - 1] if out_gate is not None else out_gate_logits[i - 1] > 0) or ~valid_mask[:, i]
+                h[mask] = 0.
+            h = self.seq(e[:, i, :], h)
+            out_gate_logits.append(self.output(h).squeeze(-1))
+            if i < e.size(1) - 1:
                 out_flags = (
                     (out_gate[:, i] if out_gate is not None else out_gate_logits[i] > 0) & valid_mask[:, i]
                 ) | (
@@ -326,7 +334,7 @@ class TokeNN(L.LightningModule):
                 out_flags = valid_mask[:, i]
             embeddings = [
                 embeddings_ + ([curr_embedding.clone()] if out_flag > 0 else list())
-                for embeddings_, curr_embedding, out_flag in zip(embeddings, h[:, i], out_flags)
+                for embeddings_, curr_embedding, out_flag in zip(embeddings, h, out_flags)
             ]
 
         out_gate_logits = torch.stack(out_gate_logits, dim=1)
