@@ -89,6 +89,7 @@ class CharTokenizer:
             text: Union[Iterable[str], str],
             return_tensors: Union[bool, Literal['pt', 'np']] = False,
             padding: Union[bool, Literal['truncate', 'max_length']] = True,
+            padding_side: Literal['left', 'right'] = 'left',
             device: Optional[torch.device] = None
     ) -> Union[Dict[str, List[int]], Dict[str, List[List[int]]], Dict[str, np.ndarray], Dict[str, torch.tensor]]:
         if isinstance(text, str):
@@ -107,9 +108,21 @@ class CharTokenizer:
 
             if padding is True or padding == 'max_length':
                 max_seq_length = max(seq_lengths)
-                padding_id = self.encoder[self.special_tokens_map.get('pad_token', self.special_tokens_map['eos_token'])]
-                ids = [ids_ + [padding_id] * (max_seq_length - seq_len) for ids_, seq_len in zip(ids, seq_lengths)]
-                valid_mask = [mask + [0] * (max_seq_length - seq_len) for mask, seq_len in zip(valid_mask, seq_lengths)]
+                padding_id = self.encoder[
+                    self.special_tokens_map.get('pad_token', self.special_tokens_map['eos_token'])
+                ]
+                if padding_side == 'left':
+                    ids = [[padding_id] * (max_seq_length - seq_len) + ids_ for ids_, seq_len in zip(ids, seq_lengths)]
+                    valid_mask = [
+                        [0] * (max_seq_length - seq_len) + mask for mask, seq_len in zip(valid_mask, seq_lengths)
+                    ]
+                elif padding_side == 'right':
+                    ids = [ids_ + [padding_id] * (max_seq_length - seq_len) for ids_, seq_len in zip(ids, seq_lengths)]
+                    valid_mask = [
+                        mask + [0] * (max_seq_length - seq_len) for mask, seq_len in zip(valid_mask, seq_lengths)
+                    ]
+                else:
+                    raise ValueError(f'Unknown padding side: {padding_side}')
             elif padding == 'truncate':
                 min_seq_length = min(seq_lengths)
                 ids = [ids_[:min_seq_length] for ids_ in ids]
@@ -158,6 +171,7 @@ class CharTokenizer:
             tokens: Union[Iterable[Iterable[str]], Iterable[str], str],
             return_tensors: Union[bool, Literal['pt', 'np']] = False,
             padding: Union[bool, Literal['truncate', 'max_length']] = True,
+            padding_side: Literal['left', 'right'] = 'left',
             device: Optional[torch.device] = None
     ) -> Union[List[float], List[List[float]], np.ndarray, torch.tensor]:
         if isinstance(tokens, str):
@@ -177,9 +191,20 @@ class CharTokenizer:
 
             if padding is True or padding == 'max_length':
                 max_seq_length = max(seq_lengths)
-                out_gate = [
-                    out_gate_ + [0.] * (max_seq_length - seq_len) for out_gate_, seq_len in zip(out_gate, seq_lengths)
-                ]
+
+                if padding_side == 'left':
+                    out_gate = [
+                        [0.] * (max_seq_length - seq_len) + out_gate_
+                        for out_gate_, seq_len in zip(out_gate, seq_lengths)
+                    ]
+                elif padding_side == 'right':
+                    out_gate = [
+                        out_gate_ + [0.] * (max_seq_length - seq_len)
+                        for out_gate_, seq_len in zip(out_gate, seq_lengths)
+                    ]
+                else:
+                    raise ValueError(f'Unknown padding side: {padding_side}')
+
             elif padding == 'truncate':
                 min_seq_length = min(seq_lengths)
                 out_gate = [out_gate_[:min_seq_length] for out_gate_ in out_gate]
