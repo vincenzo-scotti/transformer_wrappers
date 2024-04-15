@@ -258,6 +258,7 @@ class TokeNN(L.LightningModule):
             pretrained_model_name_or_path: Union[str, os.PathLike],
             weights_path: Optional[Union[str, os.PathLike]] = None,
             init_embeddings: bool = False,
+            jit: bool = False,
             **kwargs
     ):
         assert weights_path is None or init_embeddings is None
@@ -304,6 +305,15 @@ class TokeNN(L.LightningModule):
                 tokenn.embedding.weight[:] = initial_embeddings(
                     torch.tensor(tokenizer.convert_tokens_to_ids(tokenn.char_tokenizer.decoder))
                 ).clone().detach()
+
+        if jit:
+            tokenn = torch.jit.script(
+                tokenn(
+                    torch.tensor([[0, 1], [2, 3]], device=tokenn.device),
+                    valid_mask=torch.tensor([[True, True], [True, False]], device=tokenn.device),
+                    out_gate=torch.tensor([[False, True], [True, False]], device=tokenn.device)
+                )
+            )
 
         return tokenn
 
