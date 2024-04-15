@@ -62,6 +62,7 @@ class TokeNNDataset(Dataset):
     def __getitem__(self, index: int):
         return self.data[index]
 
+    @torch.no_grad()
     def collate(
             self, samples: List[str]
     ) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor]:

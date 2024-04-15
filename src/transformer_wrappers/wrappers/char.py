@@ -152,6 +152,7 @@ class CharTokenizer:
         else:
             return [self.decode(ids_, skip_special_tokens=skip_special_tokens) for ids_ in ids]
 
+    @torch.no_grad()
     def get_out_gate(
             self,
             tokens: Union[Iterable[Iterable[str]], Iterable[str], str],
@@ -216,11 +217,11 @@ class TokeNN(L.LightningModule):
         #
         self.embedding = nn.Embedding(len(self.char_tokenizer), hidden_size)
         self.seq = nn.GRUCell(hidden_size, hidden_size)
-        self.output = nn.Sequential([
+        self.output = nn.Sequential(
             nn.Linear(hidden_size, hidden_size * 4),
             nn.GELU(),
-            nn.Linear(hidden_size, 1)
-        ])
+            nn.Linear(hidden_size * 4, 1)
+        )
         #
         self.metrics: Optional[MetricCollection] = None
         #
@@ -277,7 +278,7 @@ class TokeNN(L.LightningModule):
             with torch.no_grad():
                 tokenn.embedding.weight[:] = initial_embeddings(
                     torch.tensor(tokenizer.convert_tokens_to_ids(tokenn.char_tokenizer.decoder))
-                )
+                ).clone().detach()
 
         return tokenn
 
@@ -320,8 +321,8 @@ class TokeNN(L.LightningModule):
         embeddings = [list() for _ in range(input_ids.size(0))]
         for i in range(e.size(1)):
             if i > 0:
-                mask = (out_gate[:, i - 1] if out_gate is not None else out_gate_logits[i - 1] > 0) or ~valid_mask[:, i]
-                h[mask] = 0.
+                mask = (out_gate[:, i - 1] if out_gate is not None else out_gate_logits[i - 1] > 0) | ~valid_mask[:, i]
+                h = h * (~mask).unsqueeze(-1).type(h.dtype)  # h[mask] = 0.
             h = self.seq(e[:, i, :], h)
             out_gate_logits.append(self.output(h).squeeze(-1))
             if i < e.size(1) - 1:
@@ -424,7 +425,7 @@ class TokeNN(L.LightningModule):
         return self._evaluation_epoch_start()
 
     def _evaluation_epoch_end(self, split: str):
-        for metric_id, metric in self._lm_metrics.items():
+        for metric_id, metric in self.metrics.items():
             self.log(f'{metric_id}/{split}', metric.compute())
 
     def on_validation_epoch_end(self):

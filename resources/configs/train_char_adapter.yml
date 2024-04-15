@@ -7,7 +7,7 @@ log_file: true
 log_level: INFO
 # Trainer
 trainer:
-  # accumulate_grad_batches: 32
+  accumulate_grad_batches: 4
   # precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
   gradient_clip_val: 1.0  # Gradient clipping
   max_epochs: 10  # Number of training epochs
@@ -43,7 +43,7 @@ data:
     - test
   loader:  # Data loader parameters
     train:
-      batch_size: 32
+      batch_size: 8
       num_workers: &workers 4
     validation:
       batch_size: &eval_bs 32

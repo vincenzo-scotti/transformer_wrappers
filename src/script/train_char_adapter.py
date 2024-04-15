@@ -89,9 +89,9 @@ def main(args: Namespace):
     stop_time = datetime.now()
     logging.info(f"Training completed (elapsed time: {stop_time - start_time})")
     # Load torch checkpoint
-    checkpoint = torch.load(callbacks['checkpoint_callback'].best_model_path)
+    checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
     tokenn.load_state_dict(checkpoint['state_dict'])
-    logging.info(f"Best checkpoint restored from {callbacks['checkpoint_callback'].best_model_path}")
+    logging.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
     # Test neural network
     start_time = datetime.now()
     logging.info("Validation started")
