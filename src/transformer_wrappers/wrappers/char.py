@@ -25,7 +25,8 @@ logger = logging.get_logger(__name__)
 
 
 class CharTokenizer:
-    escaped_tokens_regex: Pattern[str] = re.compile(r'<0x(\w\w)>')
+    escaped_token_hex_regex: Pattern[str] = re.compile(r'<0x(\w\w)>')
+    escaped_token_regex: Pattern[str] = re.compile(r'(<0x\w\w>)')
 
     def __init__(self, vocabulary: Set[str], special_tokens_map: Dict[str, str]):
         #
@@ -92,8 +93,11 @@ class CharTokenizer:
             padding_side: Literal['left', 'right'] = 'left',
             device: Optional[torch.device] = None
     ) -> Union[Dict[str, List[int]], Dict[str, List[List[int]]], Dict[str, np.ndarray], Dict[str, torch.tensor]]:
+        # TODO add initial white space and BOS symbol
         if isinstance(text, str):
             text = text.replace(' ', '▁')
+            for match in set(self.escaped_token_regex.findall(text)):
+                text = text.replace(match, chr(int(self.escaped_token_hex_regex.match(match)[1], 16)))
             tokens = self.tokenizer_regex.findall(text)
 
             ids = [self.encoder.get(token, self.unk_token_id) for token in tokens]
@@ -152,12 +156,12 @@ class CharTokenizer:
             skip_special_tokens: bool = False
     ) -> Union[List[str], str]:
         if isinstance(ids, int):
-            return self.decoder[ids] if ids not in self.special_tokens_map.values() else ''
+            return self.decoder[ids] if ids not in self.special_tokens_map.values() or not skip_special_tokens else ''
         elif isinstance(ids, torch.Tensor):
             return self.decode(ids.cpu().tolist(), skip_special_tokens=skip_special_tokens)
         elif isinstance(ids, np.ndarray):
             return self.decode(ids.tolist(), skip_special_tokens=skip_special_tokens)
-        elif isinstance(ids, Iterable) and all(isinstance(elem, int) for elem in ids):
+        elif all(isinstance(elem, int) for elem in ids):
             return ''.join(
                 self.decoder[id_] for id_ in ids
                 if ids not in self.special_tokens_map.values() or not skip_special_tokens
@@ -177,16 +181,12 @@ class CharTokenizer:
         if isinstance(tokens, str):
             out_gate = [0.] * len(self.encode(tokens)['input_ids'])
             out_gate[-1] = 1.
-        elif isinstance(tokens, Iterable) and all(isinstance(token, str) for token in tokens):
+        elif all(isinstance(token, str) for token in tokens):
             out_gate = sum((self.get_out_gate(token) for token in tokens), list())
         else:
             out_gate = [self.get_out_gate(tokens_) for tokens_ in tokens]
 
-        if padding and not (
-            isinstance(tokens, str) or (
-                isinstance(tokens, Iterable) and all(isinstance(token, str) for token in tokens)
-            )
-        ):
+        if padding and not (isinstance(tokens, str) or all(isinstance(token, str) for token in tokens)):
             seq_lengths = [len(elem) for elem in out_gate]
 
             if padding is True or padding == 'max_length':
@@ -277,9 +277,9 @@ class TokeNN(L.LightningModule):
             set(
                 [tok for tok in tokenizer.vocab if len(tok) == 1] +
                 [
-                    chr(int(CharTokenizer.escaped_tokens_regex.match(tok)[1], 16))
+                    chr(int(CharTokenizer.escaped_token_hex_regex.match(tok)[1], 16))
                     for tok in tokenizer.vocab
-                    if CharTokenizer.escaped_tokens_regex.match(tok)
+                    if CharTokenizer.escaped_token_hex_regex.match(tok)
                 ]
             ),  # ,
             tokenizer.special_tokens_map,
@@ -332,53 +332,39 @@ class TokeNN(L.LightningModule):
             out_gate: Optional[torch.tensor] = None,
             return_attention_mask: bool = False
     ) -> Tuple[torch.tensor, torch.tensor]:
-        if valid_mask is not None:
+        if valid_mask is not None and valid_mask.dtype != torch.bool:
             valid_mask = valid_mask.bool()
         else:
             valid_mask = torch.ones_like(input_ids, dtype=torch.bool)
-        if out_gate is not None:
+        if out_gate is not None and out_gate.dtype != torch.bool:
             out_gate = out_gate.bool()
 
         e: torch.tensor = self.embedding(input_ids)
-        h = torch.zeros_like(e[:, 0, :])
+        h = torch.zeros_like(e)
+        out_gate_logits = torch.zeros(e.size()[:-1], dtype=h.dtype, device=h.device)
 
-        out_gate_logits = list()
-        embeddings = [list() for _ in range(input_ids.size(0))]
         for i in range(e.size(1)):
             if i > 0:
-                mask = (out_gate[:, i - 1] if out_gate is not None else out_gate_logits[i - 1] > 0) | ~valid_mask[:, i]
-                h = h * (~mask).unsqueeze(-1).type(h.dtype)  # h[mask] = 0.
-            h = self.seq(e[:, i, :], h)
-            out_gate_logits.append(self.output(h).squeeze(-1))
-            if i < e.size(1) - 1:
-                out_flags = (
-                    (out_gate[:, i] if out_gate is not None else out_gate_logits[i] > 0) & valid_mask[:, i]
-                ) | (
-                    valid_mask[:, i] & ~valid_mask[:, i + 1]
-                )
+                mask = ~(
+                    out_gate[:, i - 1] if out_gate is not None else out_gate_logits[:, i - 1] > 0
+                ) & valid_mask[:, i]
+                h[:, i] = self.seq(e[:, i, :], h[:, i - 1] * mask.unsqueeze(-1).type(h.dtype))
             else:
-                out_flags = valid_mask[:, i]
-            embeddings = [
-                embeddings_ + ([curr_embedding.clone()] if out_flag > 0 else list())
-                for embeddings_, curr_embedding, out_flag in zip(embeddings, h, out_flags)
-            ]
+                h[:, i] = self.seq(e[:, i, :])
+            out_gate_logits[:, i] = self.output(h[:, i]).squeeze(-1)
 
-        out_gate_logits = torch.stack(out_gate_logits, dim=1)
-        seq_lengths = [len(elem) for elem in embeddings]
-        max_seq_length = max(seq_lengths)
-        embeddings = [
-            F.pad(
-                torch.stack(embeddings_),
-                (0, 0, 0, max_seq_length - seq_length)
-            )
-            for embeddings_, seq_length in zip(embeddings, seq_lengths)
-            if seq_length > 0
-        ]
-        embeddings = torch.stack(embeddings)
+        seq_lengths = (out_gate if out_gate is not None else out_gate_logits > 0).type(torch.int).sum(dim=-1).cpu()
+        max_seq_len = seq_lengths.max().item()
+
+        embeddings = torch.zeros(h.size(0), max_seq_len, h.size(-1), dtype=h.dtype, device=h.device)
+
+        for i, seq_len in enumerate(seq_lengths):
+            mask = (out_gate if out_gate is not None else out_gate_logits > 0)[i]
+            embeddings[i, :seq_len] = h[i, mask]
 
         if return_attention_mask:
             attention_mask = torch.ones(
-                len(embeddings), max_seq_length, dtype=torch.int, device=embeddings.device
+                embeddings.size()[:-1], dtype=torch.int, device=embeddings.device
             )
             for i, seq_length in enumerate(seq_lengths):
                 attention_mask[i, seq_length:] = 0
