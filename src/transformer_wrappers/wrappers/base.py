@@ -784,6 +784,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         #
         self._banchmarking: bool = benchmarking
 
+
+
     @classmethod
     def from_pretrained(
             cls,
