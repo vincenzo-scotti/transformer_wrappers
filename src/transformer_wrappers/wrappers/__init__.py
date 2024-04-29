@@ -1,3 +1,3 @@
 from .base import TransformerWrapper, CausalLMWrapper
 from .parallel import ParallelTransformerWrapper, ParallelCausalLMWrapper
-from .resizable import ResizableTokenizer, ResizableTransformerWrapper, ResizableLMHeadWrapper
+from .resizable import ResizableTokenizer, ResizableTransformerWrapper, ResizableCausalLMWrapper

@@ -10,7 +10,7 @@ from typing import Type, Optional, Dict, Set, List, Pattern
 from .base import ModuleWrapper, TransformerWrapper, CausalLMWrapper
 
 
-__all__ = ['ResizableTokenizer', 'ResizableTransformerWrapper', 'ResizableLMHeadWrapper']
+__all__ = ['ResizableTokenizer', 'ResizableTransformerWrapper', 'ResizableCausalLMWrapper']
 
 
 MAX_TOKEN_LEN: str = 'max_token_len'
