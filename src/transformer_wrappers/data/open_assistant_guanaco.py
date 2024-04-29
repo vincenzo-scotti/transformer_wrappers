@@ -4,34 +4,23 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 
-from transformers import PreTrainedTokenizer
-from transformer_wrappers.wrappers.char import CharTokenizer
+from transformers import PreTrainedTokenizer, BatchEncoding
 
 from datasets import load_dataset
 
 from typing import List, Tuple, Optional
 
 
-class TokeNNDataset(Dataset):
+class OpenAssistantGuanaco(Dataset):
 
     # TODO make this code more general
-    def __init__(
-            self,
-            split: str,
-            embeddings: nn.Embedding,
-            tokenizer: PreTrainedTokenizer,
-            char_tokenizer: CharTokenizer,
-            max_seq_len: Optional[int] = None
-    ):
+    def __init__(self, split: str, tokenizer: PreTrainedTokenizer, max_seq_len: Optional[int] = None):
         super(Dataset, self).__init__()
 
         self.split = split
-        self.embeddings: nn.Embedding = embeddings
         self.tokenizer: PreTrainedTokenizer = tokenizer
-        self.char_tokenizer: CharTokenizer = char_tokenizer
         self.max_seq_len: Optional[int] = max_seq_len
 
-        # TODO make this code more modular
         sep_regex = re.compile(r'### (Human|Assistant)')
 
         self.data = [
@@ -42,7 +31,7 @@ class TokeNNDataset(Dataset):
                 }
                 for message in sep_regex.sub('<sep/> \\1', dialogue).split('<sep/>')
                 if len(message) > 0
-            ]), skip_special_tokens=True).strip()  #  + tokenizer.eos_token
+            ]), skip_special_tokens=True).strip() + tokenizer.eos_token
             for idx, dialogue in enumerate(load_dataset(
                 'timdettmers/openassistant-guanaco',
                 split=self.split if split != 'validation' else 'train'
@@ -65,22 +54,15 @@ class TokeNNDataset(Dataset):
     @torch.no_grad()
     def collate(
             self, samples: List[str]
-    ) -> Tuple[torch.tensor, torch.tensor, torch.tensor, torch.tensor, torch.tensor]:
-        old_input_ids = self.tokenizer(samples)['input_ids']
-        input_ids, valid_mask = self.char_tokenizer(
-            [''.join(self.tokenizer.convert_ids_to_tokens(input_ids)) for input_ids in old_input_ids],
+    ) -> Tuple[BatchEncoding, torch.tensor]:
+        input_encodings = self.tokenizer(
+            samples,
             return_tensors='pt',
             padding=True,
-            padding_side=self.tokenizer.padding_side
-        ).values()
-        tgt_input_encodings = self.tokenizer(samples, return_tensors='pt', padding=True)
-        tgt_embeddings = self.embeddings(tgt_input_encodings.input_ids)
-        tgt_attention_mask = tgt_input_encodings.attention_mask
-        tgt_out_gate = self.char_tokenizer.get_out_gate(
-            [self.tokenizer.convert_ids_to_tokens(input_ids) for input_ids in old_input_ids],
-            return_tensors='pt'
+            truncation=self.max_seq_len is not None,
+            max_length=self.max_seq_len
         )
+        output_ids = input_encodings.input_ids.clone()
+        output_ids[~input_encodings.attention_mask.bool()] = -100
 
-        mini_batch = input_ids, valid_mask, tgt_embeddings, tgt_out_gate, tgt_attention_mask
-
-        return mini_batch
+        return input_encodings, output_ids
