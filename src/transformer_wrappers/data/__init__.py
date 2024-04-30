@@ -1,1 +1,1 @@
-from .char import OpenAssistantGuanaco
+from .open_assistant_guanaco import OpenAssistantGuanaco

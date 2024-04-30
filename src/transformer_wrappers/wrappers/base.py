@@ -1192,7 +1192,9 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         self._transformer_wrapper: TransformerWrapper = self._transformer_dtype(
             getattr(self._model, self._transformer_attr.value), self._tokenizer
         )
-        self._lm_head_wrapper: LMHeadWrapper = self._lm_head_dtype(getattr(self._model, self._lm_head_attr.value))
+        self._lm_head_wrapper: LMHeadWrapper = self._lm_head_dtype(
+            getattr(self._model, self._lm_head_attr.value), super_wrapper=self
+        )
 
     def _get_transformer_attr(self) -> LMTransformerAttr:
         return _get_module_attr_name(self._model, LMTransformerAttr)

@@ -7,7 +7,7 @@ from transformers import logging
 
 from typing import Type, Optional, Dict, Set, List, Pattern
 
-from .base import ModuleWrapper, TransformerWrapper, CausalLMWrapper
+from .base import ModuleWrapper, TransformerWrapper, LMHeadWrapper, CausalLMWrapper
 
 
 __all__ = ['ResizableTokenizer', 'ResizableTransformerWrapper', 'ResizableCausalLMWrapper']
@@ -101,6 +101,10 @@ class ResizableTokenizer(PreTrainedTokenizer):
                 if token in special_tokens or self._escaped_token_regex.match(token) or len(token) <= max_token_len
             }
 
+    @property
+    def vocab_size(self):
+        return len(self.get_vocab())
+
     def add_tokens(self, *args, **kwargs):
         return self.tokenizer.add_tokens(*args, **kwargs)
 
@@ -189,7 +193,7 @@ class ResizableTransformerWrapper(TransformerWrapper):
         self._tokenizer.max_token_len = max_token_len
 
 
-class ResizableLMHeadWrapper(ModuleWrapper):
+class ResizableLMHeadWrapper(LMHeadWrapper):
     def _apply_logits_mask(self, logits: torch.tensor) -> torch.tensor:
         mask = torch.full_like(logits, torch.finfo(logits.dtype).min)
         mask[..., list(self.super_wrapper.tokenizer.get_vocab().values())] = 0
@@ -213,6 +217,7 @@ class ResizableCausalLMWrapper(CausalLMWrapper):
             self.WRAPPER_CONFIGS_KEY
         ].get(MAX_TOKEN_LEN)
         self._tokenizer = ResizableTokenizer(self._tokenizer, max_token_len=self.max_token_len)
+        self.transformer_wrapper._tokenizer = self._tokenizer
 
     @property
     def max_token_len(self):
