@@ -22,6 +22,7 @@ from transformers.modeling_attn_mask_utils import (
 )
 from transformers import logging
 
+from transformers import BitsAndBytesConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from peft.peft_model import PeftModel
 
@@ -150,6 +151,9 @@ class ModuleWrapper(nn.Module, BaseWrapper):
         self._module: nn.Module = module
         self._super_wrapper: Optional[BaseWrapper] = super_wrapper
 
+    def __repr__(self):
+        return repr(self._module)  # TODO fixme
+
     @property
     def base_module(self) -> nn.Module:
         # logger.warning(
@@ -173,7 +177,7 @@ class ModuleWrapper(nn.Module, BaseWrapper):
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
-        module_output = self.base_module.forward(**kwargs)
+        module_output = self._module.forward(**kwargs)
         # Extend input with module output
         output = kwargs | {self.module_output: module_output}
 
@@ -214,7 +218,7 @@ class EmbeddingWrapper(ModuleWrapper):
             **kwargs
     ):
         #
-        input_embeddings = input_embeddings if input_embeddings is not None else self.base_module.forward(input_ids)
+        input_embeddings = input_embeddings if input_embeddings is not None else self._module.forward(input_ids)
         #
         output = kwargs | {self.module_output: input_embeddings}
 
@@ -276,7 +280,7 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        attn_output = self.base_module.forward(current_hidden_state, **attention_params)
+        attn_output = self._module.forward(current_hidden_state, **attention_params)
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -324,7 +328,7 @@ class FeedForwardWrapper(ModuleWrapper):
         if current_hidden_state is None:
             raise ValueError()
         #
-        ffnn_output = self.base_module.forward(current_hidden_state)
+        ffnn_output = self._module.forward(current_hidden_state)
         #
         output = kwargs | {self.module_output: ffnn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -351,11 +355,11 @@ class LayerWrapper(ModuleWrapper):
 
     @property
     def is_attention_wrapping(self):
-        return isinstance(getattr(self.base_module, self._attention_attr.value), self._attention_dtype)
+        return isinstance(getattr(self._module, self._attention_attr.value), self._attention_dtype)
 
     @property
     def is_feed_forward_wrapping(self):
-        return isinstance(getattr(self.base_module, self._feed_forward_attr.value), self._feed_forward_dtype)
+        return isinstance(getattr(self._module, self._feed_forward_attr.value), self._feed_forward_dtype)
 
     @property
     def is_wrapping(self):
@@ -363,11 +367,11 @@ class LayerWrapper(ModuleWrapper):
 
     def enable_attention_wrapper(self):
         if not self.is_attention_wrapping:
-            setattr(self.base_module, self._attention_attr.value, self.attention_wrapper)
+            setattr(self._module, self._attention_attr.value, self._attention_wrapper)
 
     def enable_feed_forward_wrapper(self):
         if not self.is_feed_forward_wrapping:
-            setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper)
+            setattr(self._module, self._feed_forward_attr.value, self._feed_forward_wrapper)
 
     def enable_wrapper(self):
         if not self.is_wrapping:
@@ -376,11 +380,11 @@ class LayerWrapper(ModuleWrapper):
 
     def disable_attention_wrapper(self):
         if self.is_attention_wrapping:
-            setattr(self.base_module, self._attention_attr.value, self.attention_wrapper.base_module)
+            setattr(self._module, self._attention_attr.value, self._attention_wrapper.base_module)
 
     def disable_feed_forward_wrapper(self):
         if self.is_feed_forward_wrapping:
-            setattr(self.base_module, self._feed_forward_attr.value, self.feed_forward_wrapper.base_module)
+            setattr(self._module, self._feed_forward_attr.value, self._feed_forward_wrapper.base_module)
 
     def disable_wrapper(self):
         if self.is_wrapping:
@@ -388,24 +392,24 @@ class LayerWrapper(ModuleWrapper):
             self.disable_feed_forward_wrapper()
 
     def _get_initial_norm_attr(self) -> LayerInitialNormAttr:
-        return _get_module_attr_name(self.base_module, LayerInitialNormAttr)
+        return _get_module_attr_name(self._module, LayerInitialNormAttr)
 
     def _get_attention_attr(self) -> LayerAttentionAttr:
-        return _get_module_attr_name(self.base_module, LayerAttentionAttr)
+        return _get_module_attr_name(self._module, LayerAttentionAttr)
 
     def _get_intermediate_norm_attr(self) -> LayerIntermediateNormAttr:
-        return _get_module_attr_name(self.base_module, LayerIntermediateNormAttr)
+        return _get_module_attr_name(self._module, LayerIntermediateNormAttr)
 
     def _get_feed_forward_attr(self) -> LayerFeedForwardAttr:
-        return _get_module_attr_name(self.base_module, LayerFeedForwardAttr)
+        return _get_module_attr_name(self._module, LayerFeedForwardAttr)
 
     @property
     def initial_norm(self) -> nn.Module:
-        return getattr(self.base_module, self._initial_norm_attr.value)
+        return getattr(self._module, self._initial_norm_attr.value)
 
     @property
     def attention(self):
-        return self.attention_wrapper.base_module
+        return self._attention_wrapper.base_module
 
     @property
     def attention_wrapper(self) -> AttentionWrapper:
@@ -413,11 +417,11 @@ class LayerWrapper(ModuleWrapper):
 
     @property
     def intermediate_norm(self) -> nn.Module:
-        return getattr(self.base_module, self._intermediate_norm_attr.value)
+        return getattr(self._module, self._intermediate_norm_attr.value)
 
     @property
     def feed_forward(self):
-        return self.feed_forward_wrapper.base_module
+        return self._feed_forward_wrapper.base_module
 
     @property
     def feed_forward_wrapper(self):
@@ -566,18 +570,18 @@ class LayersWrapper(ModuleWrapper):
 
     @property
     def layers(self):
-        return self.base_module
+        return self._module
 
     @property
     def layer_wrappers(self):
         return self._layer_wrappers
 
     @property
-    def layers_iterator(self):
-        return self.base_module
+    def layers_iterator(self) -> Iterable:
+        return self._module
 
     def get_layer_wrappers_iterator(self) -> Iterable:
-        return self.layer_wrappers
+        return self._layer_wrappers
 
     def _use_dynamic_cache(self) -> bool:
         return all(isinstance(layer, SHARED_STRUCTURE_LAYERS) for layer in self.layers_iterator)
@@ -714,7 +718,7 @@ class LayersWrapper(ModuleWrapper):
                     sliding_window=self.super_wrapper.base_model.config.sliding_window,
                 )
         else:
-            raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+            raise NotImplementedError(f'Unsupported model type: `{type(self.super_wrapper.base_model)}`.')
         #
         kwargs |= {ATTENTION_MASK: attention_mask}
 
@@ -782,9 +786,10 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         self._model: PreTrainedModel = model
         self._tokenizer: PreTrainedTokenizer = tokenizer
         #
-        self._banchmarking: bool = benchmarking
+        self._benchmarking: bool = benchmarking
 
-
+    def __repr__(self):
+        return repr(self._model)  # TODO fixme
 
     @classmethod
     def from_pretrained(
@@ -792,7 +797,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             pretrained_model_name_or_path: Union[str, os.PathLike],
             model_args: Optional[Tuple] = None,
             model_kwargs: Optional[Dict] = None,
+            quantization_configs: Optional[BitsAndBytesConfig] = None,
             lora_config: Optional[LoraConfig] = None,
+            gradient_checkpointing: bool = False,
             tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
             tokenizer_kwargs: Optional[Dict] = None,
@@ -806,19 +813,25 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
         model_kwargs['attn_implementation'] = 'eager'  # Make better version
+        if quantization_configs is not None:
+            model_kwargs['quantization_config'] = quantization_configs
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
         model = cls._auto_model_dtype.from_pretrained(
-                pretrained_model_name_or_path, *model_args, **model_kwargs
+                pretrained_model_name_or_path, *model_args, **model_kwargs,
             )
+        if gradient_checkpointing:
+            model.gradient_checkpointing_enable()
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
         )
-        if lora_config is not None:
-            model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=False)  # TODO fix gradient checkpointing issue
-            model = get_peft_model(model, lora_config)
+
         wrapper = cls(model, tokenizer)
+
+        if lora_config is not None:
+            wrapper = prepare_model_for_kbit_training(wrapper)  # TODO fix gradient checkpointing issue
+            wrapper = get_peft_model(wrapper, lora_config)
 
         return wrapper
 
@@ -841,15 +854,25 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     @property
     def is_training(self) -> bool:
-        return self.base_model.training
+        return self._model.training
 
-    @property  # TODO fixme (not updating)
+    @property
     def is_benchmarking(self) -> bool:
-        return self._banchmarking
+        return self._benchmarking
 
     @property
     def gradient_checkpointing(self):
-        return self.base_model.gradient_checkpointing
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model.gradient_checkpointing
+        else:
+            return self._model.gradient_checkpointing
+
+    @property
+    def is_gradient_checkpointing(self):
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model.is_gradient_checkpointing
+        else:
+            return self._model.is_gradient_checkpointing
 
     def eval(self):
         self._model = self._model.eval()
@@ -869,14 +892,14 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
-        model_output = self.base_model.forward(**kwargs)
+        model_output = self._model.forward(**kwargs)
         # Extend input with module output
         output = kwargs | {self.model_name: model_output}
 
         return output
 
     def _post_process_output(self, base_model_output: bool = False, **kwargs):
-        if self.base_model_ouput:
+        if self._model_ouput:
             return kwargs[self.model_output]
         else:
             return kwargs
@@ -921,11 +944,11 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def is_embedding_wrapping(self):
-        return isinstance(getattr(self.base_model, self._embedding_attr.value), self._embedding_dtype)
+        return isinstance(getattr(self._model, self._embedding_attr.value), self._embedding_dtype)
 
     @property
     def are_layers_wrapping(self):
-        return isinstance(getattr(self.base_model, self._layers_attr.value), self._layers_dtype)
+        return isinstance(getattr(self._model, self._layers_attr.value), self._layers_dtype)
 
     @property
     def is_wrapping(self):
@@ -933,12 +956,12 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     def enable_embedding_wrapper(self):
         if not self.is_embedding_wrapping:
-            setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper)
+            setattr(self._model, self._embedding_attr.value, self._embedding_wrapper)
 
     def enable_layers_wrapper(self):
         if not self.are_layers_wrapping:
             self.layers_wrapper.enable_wrapper()
-            setattr(self.base_model, self._layers_attr.value, self.layers_wrapper)
+            setattr(self._model, self._layers_attr.value, self._layers_wrapper)
 
     def enable_wrapper(self):
         if not self.is_wrapping:
@@ -947,12 +970,12 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     def disable_embedding_wrapper(self):
         if self.is_embedding_wrapping:
-            setattr(self.base_model, self._embedding_attr.value, self.embedding_wrapper.base_module)
+            setattr(self._model, self._embedding_attr.value, self._embedding_wrapper.base_module)
 
     def disable_layers_wrapper(self):
         if self.are_layers_wrapping:
             self.layers_wrapper.disable_wrapper()
-            setattr(self.base_model, self._layers_attr.value, self.layers_wrapper.base_module)
+            setattr(self._model, self._layers_attr.value, self._layers_wrapper.base_module)
 
     def disable_wrapper(self):
         if self.is_wrapping:
@@ -960,23 +983,23 @@ class TransformerWrapper(PreTrainedModelWrapper):
             self.disable_layers_wrapper()
 
     def _get_embedding_attr(self) -> TransformerEmbeddingAttr:
-        return _get_module_attr_name(self.base_model, TransformerEmbeddingAttr)
+        return _get_module_attr_name(self._model, TransformerEmbeddingAttr)
 
     def _get_position_embedding_attr(self) -> Optional[TransformerPositionEmbeddingAttr]:
         try:
-            return _get_module_attr_name(self.base_model, TransformerPositionEmbeddingAttr)
+            return _get_module_attr_name(self._model, TransformerPositionEmbeddingAttr)
         except ValueError:
             return None
 
     def _get_layers_attr(self) -> TransformerLayersAttr:
-        return _get_module_attr_name(self.base_model, TransformerLayersAttr)
+        return _get_module_attr_name(self._model, TransformerLayersAttr)
 
     def _get_norm_attr(self) -> TransformerNormAttr:
-        return _get_module_attr_name(self.base_model, TransformerNormAttr)
+        return _get_module_attr_name(self._model, TransformerNormAttr)
 
     @property
     def embedding(self):
-        return self.embedding_wrapper.base_module
+        return self._embedding_wrapper.base_module
 
     @property
     def embedding_wrapper(self):
@@ -984,7 +1007,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def layers(self):
-        return self.layers_wrapper.base_module
+        return self._layers_wrapper.base_module
 
     @property
     def layers_wrapper(self):
@@ -992,7 +1015,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
     @property
     def norm(self) -> nn.Module:
-        return getattr(self.base_model, self._norm_attr.value)
+        return getattr(self._model, self._norm_attr.value)
 
     def _pre_process_input(
             self,
@@ -1023,7 +1046,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             past_key_values = None
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
         #
-        dtype = self.base_model.dtype
+        dtype = self._model.dtype
         # Input
         if (input_ids is not None) and (input_embeds is not None):
             raise ValueError('Models accept either `input_ids` or `inputs_embeds`, not both.')
@@ -1037,41 +1060,41 @@ class TransformerWrapper(PreTrainedModelWrapper):
             raise ValueError('One between `input_ids` or `inputs_embeds` must be specified.')
         # Cache
         if past_key_values is None:
-            if isinstance(self.base_model, GPT2PreTrainedModel):
+            if isinstance(self._model, GPT2PreTrainedModel):
                 past_key_values = [None] * self.config.num_hidden_layers
-            elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
+            elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
                 past_key_values = DynamicCache.from_legacy_cache(past_key_values)
             else:
-                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
             prefix_length = 0
         else:
-            if isinstance(self.base_model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
+            if isinstance(self._model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
                 prefix_length = past_key_values[0][0].size(-2)
-            elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
+            elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
                 if not isinstance(past_key_values, Cache):
                     past_key_values = DynamicCache.from_legacy_cache(past_key_values)
                 prefix_length = past_key_values.get_usable_length(seq_length)
             else:
-                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
         # Positions
         if position_ids is not None:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self._model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = position_ids.unsqueeze(0)
-            elif isinstance(self.base_model, MistralPreTrainedModel):
+            elif isinstance(self._model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
-                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
         else:
-            if isinstance(self.base_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self._model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)
-            elif isinstance(self.base_model, MistralPreTrainedModel):
+            elif isinstance(self._model, MistralPreTrainedModel):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0).view(-1, seq_length)
             else:
-                raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
         #
         kwargs |= {
             INPUT_IDS: input_ids,
@@ -1123,14 +1146,14 @@ class TransformerWrapper(PreTrainedModelWrapper):
                     'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
                 )
             if return_dict:
-                if isinstance(self.base_model, GPT2PreTrainedModel):
+                if isinstance(self._model, GPT2PreTrainedModel):
                     return BaseModelOutputWithPastAndCrossAttentions(
                         last_hidden_state=kwargs[self.model_output],
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
+                elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
                     return BaseModelOutputWithPast(
                         last_hidden_state=kwargs[self.model_output],
                         past_key_values=cache,
@@ -1138,7 +1161,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                         attentions=attention_weights
                     )
                 else:
-                    raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                    raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
             else:
                 return tuple(
                     v for v in [kwargs[self.model_output], cache, hidden_states, attention_weights] if v is not None
@@ -1165,7 +1188,7 @@ class LMHeadWrapper(ModuleWrapper):
         if output_hidden_state is None:
             raise ValueError()
         #
-        logits = self.base_module.forward(output_hidden_state)
+        logits = self._module.forward(output_hidden_state)
         #
         output = kwargs | {self.module_output: logits, OUT_HIDDEN_STATE: output_hidden_state}
 
@@ -1204,11 +1227,11 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     @property
     def is_transformer_wrapping(self):
-        return isinstance(getattr(self.base_model, self._transformer_attr.value), self._transformer_dtype)
+        return isinstance(getattr(self._model, self._transformer_attr.value), self._transformer_dtype)
 
     @property
     def is_lm_head_wrapping(self):
-        return isinstance(getattr(self.base_model, self._lm_head_attr.value), self._lm_head_dtype)
+        return isinstance(getattr(self._model, self._lm_head_attr.value), self._lm_head_dtype)
 
     @property
     def is_wrapping(self):
@@ -1217,11 +1240,11 @@ class CausalLMWrapper(PreTrainedModelWrapper):
     def enable_transformer_wrapper(self):
         if not self.is_transformer_wrapping:
             self.transformer_wrapper.enable_wrapper()
-            setattr(self.base_model, self._transformer_attr.value, self.transformer_wrapper)
+            setattr(self._model, self._transformer_attr.value, self._transformer_wrapper)
 
     def enable_lm_head_wrapper(self):
         if not self.is_lm_head_wrapping:
-            setattr(self.base_model, self._lm_head_attr.value, self.lm_head_wrapper)
+            setattr(self._model, self._lm_head_attr.value, self._lm_head_wrapper)
 
     def enable_wrapper(self):
         if not self.is_wrapping:
@@ -1282,7 +1305,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                     'Note: the last tensor in the output `hidden_states` is the non-normalised tensor `last_hidden_state`.'
                 )
             if return_dict:
-                if isinstance(self.base_model, GPT2PreTrainedModel):
+                if isinstance(self._model, GPT2PreTrainedModel):
                     return CausalLMOutputWithCrossAttentions(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
@@ -1290,7 +1313,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.base_model, SHARED_STRUCTURE_MODELS):
+                elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
                     return CausalLMOutputWithPast(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
@@ -1299,7 +1322,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
                         attentions=attention_weights
                     )
                 else:
-                    raise NotImplementedError(f'Unsupported model type: `{type(self.base_model)}`.')
+                    raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
             else:
                 return tuple(
                     v for v in [
@@ -1354,7 +1377,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         # TODO fix Llama and Gemma generation issue
         self.enable_wrapper()
         #
-        inputs = self.base_model.prepare_inputs_for_generation(
+        inputs = self._model.prepare_inputs_for_generation(
             *args, **kwargs
         ) | {'base_model_output': base_model_output}
 
