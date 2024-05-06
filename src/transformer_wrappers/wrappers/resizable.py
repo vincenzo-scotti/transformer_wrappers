@@ -178,18 +178,17 @@ class ResizableTransformerWrapper(TransformerWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         #
-        self.max_token_len: Optional[int] = self.config.task_specific_params[
+        max_token_len: Optional[int] = self.config.task_specific_params[
             self.WRAPPER_CONFIGS_KEY
         ].get(MAX_TOKEN_LEN)
-        self._tokenizer = ResizableTokenizer(self._tokenizer, max_token_len=self.max_token_len)
+        self._tokenizer = ResizableTokenizer(self._tokenizer, max_token_len=max_token_len)
 
     @property
     def max_token_len(self):
-        return self._max_token_len
+        return self._tokenizer.max_token_len
 
     @max_token_len.setter
     def max_token_len(self, max_token_len: Optional[int] = None):
-        self._max_token_len = max_token_len
         self._tokenizer.max_token_len = max_token_len
 
 
@@ -208,25 +207,13 @@ class ResizableLMHeadWrapper(LMHeadWrapper):
 
 
 class ResizableCausalLMWrapper(CausalLMWrapper):
+    _transformer_dtype: Type[TransformerWrapper] = ResizableTransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = ResizableLMHeadWrapper
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         #
-        self.max_token_len: Optional[int] = self.config.task_specific_params[
-            self.WRAPPER_CONFIGS_KEY
-        ].get(MAX_TOKEN_LEN)
-        self._tokenizer = ResizableTokenizer(self._tokenizer, max_token_len=self.max_token_len)
-        self.transformer_wrapper._tokenizer = self._tokenizer
-
-    @property
-    def max_token_len(self):
-        return self._max_token_len
-
-    @max_token_len.setter
-    def max_token_len(self, max_token_len: Optional[int] = None):
-        self._max_token_len = max_token_len
-        self._tokenizer.max_token_len = max_token_len
+        self._tokenizer = self._transformer_wrapper.tokenizer
 
 
 """

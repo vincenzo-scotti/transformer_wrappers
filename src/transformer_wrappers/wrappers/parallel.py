@@ -371,7 +371,7 @@ class ParallelTransformerWrapper(TransformerWrapper):
 
 
 class ParallelCausalLMWrapper(CausalLMWrapper):
-    _transformer_dtype: Type[PreTrainedModelWrapper] = ParallelTransformerWrapper
+    _transformer_dtype: Type[TransformerWrapper] = ParallelTransformerWrapper
 
     def prepare_inputs_for_generation(
             self,

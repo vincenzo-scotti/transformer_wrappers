@@ -1,5 +1,6 @@
 import os
 import inspect
+from copy import deepcopy
 
 from enum import Enum
 from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
@@ -149,7 +150,7 @@ class ModuleWrapper(nn.Module, BaseWrapper):
     def __init__(self, module: nn.Module, super_wrapper: Optional[BaseWrapper] = None):
         super().__init__()
         self._module: nn.Module = module
-        self._super_wrapper: Optional[BaseWrapper] = super_wrapper
+        self._super_wrapper: Optional[Tuple[BaseWrapper]] = super_wrapper,
 
     def __repr__(self):
         return repr(self._module)  # TODO fixme
@@ -163,7 +164,7 @@ class ModuleWrapper(nn.Module, BaseWrapper):
 
     @property
     def super_wrapper(self) -> BaseWrapper:
-        return self._super_wrapper
+        return self._super_wrapper[0]
 
     def eval(self):
         self._module = self._module.eval()
@@ -812,6 +813,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         tokenizer_args = tokenizer_args if tokenizer_args else tuple()
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
+        model_kwargs = deepcopy(model_kwargs)
         model_kwargs['attn_implementation'] = 'eager'  # Make better version
         if quantization_configs is not None:
             model_kwargs['quantization_config'] = quantization_configs
@@ -1201,7 +1203,7 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
 
-    _transformer_dtype: Type[PreTrainedModelWrapper] = TransformerWrapper
+    _transformer_dtype: Type[TransformerWrapper] = TransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
 
     lm_loss: str = 'lm_loss'
