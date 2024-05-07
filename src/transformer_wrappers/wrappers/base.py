@@ -1,15 +1,20 @@
 import os
+import logging
+from datetime import datetime
 import inspect
 from copy import deepcopy
 
-from enum import Enum
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
-
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import lightning as L
+from lightning.pytorch import callbacks as pl_callbacks
+from lightning.pytorch import loggers as pl_loggers
+from torchmetrics import MetricCollection
 
-from transformers import PreTrainedModel, PreTrainedTokenizer
+from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
@@ -28,6 +33,11 @@ from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
 from peft.peft_model import PeftModel
 
 from .constants import *
+from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
+from transformer_wrappers.utils.metrics import PPLScore, BLEUScore, F1Score, DistinctNScore
+
+from enum import Enum
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 # TODO fix base model/module properties and wrapper enable/disable methods
 # TODO implement gradient checkpointing
@@ -1197,7 +1207,7 @@ class LMHeadWrapper(ModuleWrapper):
         return output
 
 
-class CausalLMWrapper(PreTrainedModelWrapper):
+class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     _model_name: str = 'causal language model'
     model_output: str = 'causal_language_model_output'
 
@@ -1220,6 +1230,14 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         self._lm_head_wrapper: LMHeadWrapper = self._lm_head_dtype(
             getattr(self._model, self._lm_head_attr.value), super_wrapper=self
         )
+
+        # Lightning module parameters for fine-tuning
+        self.optimiser_params: Dict = dict()
+        self.lr_scheduler_params: Dict = dict()
+        self.trainer_params: Dict = dict()
+        self.data_loader_params: Dict = dict()
+        self.metrics: Optional[MetricCollection] = None
+        self._steps_per_epoch: Optional[int] = None
 
     def _get_transformer_attr(self) -> LMTransformerAttr:
         return _get_module_attr_name(self._model, LMTransformerAttr)
@@ -1386,3 +1404,161 @@ class CausalLMWrapper(PreTrainedModelWrapper):
         return inputs
 
     # TODO implement other PreTrainedModel methods
+
+    # Lightning Module
+
+    def set_fine_tuning_params(self, **kwargs):
+        for k, v in kwargs.items():
+            setattr(self, k, v)
+
+    def configure_optimizers(self):
+        # Build optimiser
+        optimiser_params = self.optimiser_params.copy()
+        optimiser_dtype = optimiser_params.pop('dtype')
+        optimiser = optimizer_mapping[optimiser_dtype](self.parameters(), **optimiser_params)
+        # Check whether LR scheduling is required
+        if len(self.lr_scheduler_params) > 0:
+            lr_scheduler_params = self.lr_scheduler_params.copy()
+            lr_scheduler_dtype = lr_scheduler_params.pop('dtype')
+            lr_scheduler_interval = lr_scheduler_params.pop('interval')
+            if lr_scheduler_params == 'step':
+                lr_scheduler_params['steps_per_epoch'] = int(math.ceil(self._steps_per_epoch))
+            lr_scheduler = lr_scheduler_mapping[lr_scheduler_dtype](optimiser, **lr_scheduler_params)
+            return [optimiser], [{'scheduler': lr_scheduler, 'interval': lr_scheduler_interval}]
+        else:
+            return optimiser
+
+    def configure_metrics(self, all: bool = False):
+        metrics = {'Perplexity': PPLScore()}
+        if all:
+            metrics |= {
+                    f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4),
+                } | {
+                    'F1': F1Score()
+                } | {
+                    f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
+                }
+
+        self.metrics = MetricCollection(metrics)
+
+    def prepare_input(self, text: Iterable[str]) -> BatchEncoding:
+        return self.tokenizer(text, return_tensors='pt', padding=True)
+
+    def prepare_output(self, text: Iterable[str]) -> torch.Tensor:
+        output_ids, attention_mask = self.tokenizer(text, return_tensors='pt', padding=True).values()
+        output_ids[~attention_mask.bool()] = -100
+
+        return output_ids
+
+    def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, torch.Tensor]:
+        return (
+            self.prepare_input([sample['text'] for sample in samples]),
+            self.prepare_output([sample['text'] for sample in samples])
+        )
+
+    def _step(self, split: str, mini_batch, mini_batch_idx: int) -> Tuple[Dict, torch.Tensor]:
+        # Unpack the encoding and the target labels
+        input_encodings, labels = mini_batch
+        # Compute output
+        wrapper_output = self.forward(input_encodings)
+        # Compute logits
+        logits: torch.tensor = wrapper_output['logits']
+        # Shift logits to exclude the last element
+        logits = logits[..., :-1, :].contiguous()
+        # shift labels to exclude the first element
+        labels = labels[..., 1:].contiguous()
+        # Compute LM loss token-wise
+        loss: torch.tensor = F.cross_entropy(
+            logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=self.ignore_idx
+        )
+        # Log LM loss
+        self.log(f'Loss/{split.capitalize()}', loss)
+
+        return wrapper_output, loss
+
+    def training_step(self, mini_batch, mini_batch_idx: int) -> torch.tensor:
+        output, loss = self._step('Train', mini_batch, mini_batch_idx)
+
+        return loss
+
+    def _eval_step(self, split: str, mini_batch, mini_batch_idx: int):
+        # TODO add support for generative metrics
+        raise NotImplementedError()
+
+    def validation_step(self, mini_batch, mini_batch_idx):
+        return self._eval_step('Validation', mini_batch, mini_batch_idx)
+
+    def test_step(self, mini_batch, mini_batch_idx):
+        return self._eval_step('Test', mini_batch, mini_batch_idx)
+
+    def _evaluation_epoch_start(self):
+        if self._metrics is not None:
+            for metric in self._metrics.values():
+                metric.reset()
+
+    def on_validation_epoch_start(self):
+        return self._evaluation_epoch_start()
+
+    def on_test_epoch_start(self):
+        return self._evaluation_epoch_start()
+
+    def _evaluation_epoch_end(self, split: str):
+        if self._metrics is not None:
+            for metric_id, metric in self._metrics.items():
+                self.log(f'{metric_id}/{split}', metric.compute())
+
+    def on_validation_epoch_end(self):
+        return self._evaluation_epoch_end('Validation')
+
+    def on_test_epoch_end(self):
+        return self._evaluation_epoch_end('Test')
+
+    def fit_eval(
+            self,
+            data_splits: Dict[str, Dataset],
+            *_,
+            dir_path: Optional[str] = None,
+            callbacks: Optional[Dict[str, pl_callbacks.Callback]] = None,
+            loggers: Optional[Iterable[pl_loggers.Logger]] = None
+    ) -> 'CausalLMWrapper':
+        # Create data loaders
+        data_loaders: Dict[str, DataLoader] = {
+            split: DataLoader(data, collate_fn=self.collate, shuffle=split == 'train', **self.data_loader_params[split])
+            for split, data in data_splits.items()
+        }
+        logging.info("Data loaders instantiated")
+        #
+        self._steps_per_epoch = len(data_loaders['train']) / self.trainer_params.get('accumulate_grad_batches', 1)
+        # Create Trainer
+        self.configure_metrics()
+        trainer = L.Trainer(
+            default_root_dir=dir_path,
+            **self.trainer_params,
+            callbacks=list(callbacks.values()),
+            logger=loggers
+        )
+        logging.info("Trainer instantiated")
+        # Train neural network
+        start_time = datetime.now()
+        logging.info("Training started")
+        trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])
+        stop_time = datetime.now()
+        logging.info(f"Training completed (elapsed time: {stop_time - start_time})")
+        # Load torch checkpoint
+        if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
+            checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
+            self.load_state_dict(checkpoint['state_dict'])
+            logging.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
+        # Test neural network
+        start_time = datetime.now()
+        logging.info("Validation started")
+        trainer.validate(self, dataloaders=data_loaders['validation'])
+        stop_time = datetime.now()
+        logging.info(f"Validation completed (elapsed time: {stop_time - start_time})")
+        start_time = datetime.now()
+        logging.info("Testing started")
+        trainer.test(self, dataloaders=data_loaders['test'])
+        stop_time = datetime.now()
+        logging.info(f"Testing completed (elapsed time: {stop_time - start_time})")
+
+        return self

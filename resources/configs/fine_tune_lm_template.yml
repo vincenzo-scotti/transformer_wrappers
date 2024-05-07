@@ -1,0 +1,78 @@
+# Main
+experiment_series: <series>  # <wrapper_dtype>_<data_set>
+experiment_id: <model>
+experiments_dir_path: ./experiments/
+random_seed: 42
+log_file: true
+log_level: INFO
+# Data
+data:
+  corpus: <corpus_dtype>  # OpenAssistantGuanaco
+  splits:
+    - train
+    - validation
+    - test
+  params:
+    {}
+    # path: ./resources/data/raw/<data_path>  # ...
+# Callbacks
+callbacks:
+  early_stopping:
+    monitor: &estop_monitor Loss/Validation
+    mode: &estop_mode min
+    patience: 5  # Early stopping patience
+    min_delta: 1.e-3  # Minimum metric variation
+    verbose: true
+  checkpoint_callback:
+    monitor: *estop_monitor
+    mode: *estop_mode
+    # save_top_k: 1
+# Model
+model:
+  # Task
+  dtype: <task_dtype>  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
+  # Contextual embeddings
+  contextual_model:
+    dtype: RecurrentNetwork  # ...
+    # path: ...
+    # Static embeddings:
+    embedding_model:
+      dtype: <embedding_dtype>  # Word2Vec | GloVe | FastText | Def2Vec
+      path: ./resources/models/pre_trained/<model>  # ./resources/models/pre_trained/word_2_vec | ./resources/models/pre_trained/glove | ./resources/models/pre_trained/fast_text
+    # Hidden layers
+    hidden_layers:
+      # path: ...
+      n_layers: 3
+      hidden_size: 300  # 512
+      dropout_rate: 0.2
+      params:
+        recurrent_type: &recurrent_type gru
+        bidirectional: &bidirectional true
+# Model hyperparameters
+hyperaparameters:
+  # Optimiser
+  optimiser_params:
+    dtype: AdamW  # AdamW | RMSprop
+    lr: 6.25.e-5  # Learning rate
+    # scale_parameter: false  # Used by AdaFactor
+    # relative_step: false  # Used by AdaFactor
+  # Trainer
+  trainer_params:
+    accumulate_grad_batches: 1
+    precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
+    gradient_clip_val: 1.0  # Gradient clipping
+    max_epochs: 3  # Number of training epochs
+  # Data loader
+  data_loader_params:
+    train:
+      batch_size: 1
+      num_workers: &workers 4
+      # multiprocessing_context: &multiprocessing_context spawn
+    validation:
+      batch_size: &eval_bs 1
+      num_workers: *workers
+      # multiprocessing_context: *multiprocessing_context
+    test:
+      batch_size: *eval_bs
+      num_workers: *workers
+      # multiprocessing_context: *multiprocessing_context
