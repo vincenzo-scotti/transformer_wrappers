@@ -160,7 +160,7 @@ class ModuleWrapper(nn.Module, BaseWrapper):
     def __init__(self, module: nn.Module, super_wrapper: Optional[BaseWrapper] = None):
         super().__init__()
         self._module: nn.Module = module
-        self._super_wrapper: Optional[Tuple[BaseWrapper]] = super_wrapper,
+        self._super_wrapper: Optional[Tuple[BaseWrapper]] = super_wrapper,  # NOTE the comma in important
 
     def __repr__(self):
         return repr(self._module)  # TODO fixme
@@ -809,7 +809,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             model_args: Optional[Tuple] = None,
             model_kwargs: Optional[Dict] = None,
             quantization_configs: Optional[BitsAndBytesConfig] = None,
-            lora_config: Optional[LoraConfig] = None,
+            lora_configs: Optional[LoraConfig] = None,
             gradient_checkpointing: bool = False,
             tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
@@ -841,9 +841,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
         wrapper = cls(model, tokenizer)
 
-        if lora_config is not None:
+        if lora_configs is not None:
             wrapper = prepare_model_for_kbit_training(wrapper)  # TODO fix gradient checkpointing issue
-            wrapper = get_peft_model(wrapper, lora_config)
+            wrapper = get_peft_model(wrapper, lora_configs)
 
         return wrapper
 
@@ -1428,16 +1428,15 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         else:
             return optimiser
 
-    def configure_metrics(self, all: bool = False):
+    def configure_metrics(self):
         metrics = {'Perplexity': PPLScore()}
-        if all:
-            metrics |= {
-                    f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4),
-                } | {
-                    'F1': F1Score()
-                } | {
-                    f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
-                }
+        metrics |= {
+                f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4)
+            } | {
+                'F1': F1Score()
+            } | {
+                f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
+            }
 
         self.metrics = MetricCollection(metrics)
 
@@ -1456,34 +1455,54 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             self.prepare_output([sample['text'] for sample in samples])
         )
 
-    def _step(self, split: str, mini_batch, mini_batch_idx: int) -> Tuple[Dict, torch.Tensor]:
+    def _step(
+            self, split: str, mini_batch: Tuple[BatchEncoding, torch.Tensor], mini_batch_idx: int
+    ) -> Tuple[Dict, torch.Tensor]:
         # Unpack the encoding and the target labels
         input_encodings, labels = mini_batch
         # Compute output
         wrapper_output = self.forward(input_encodings)
         # Compute logits
-        logits: torch.tensor = wrapper_output['logits']
+        logits: torch.tensor = wrapper_output.logits
         # Shift logits to exclude the last element
         logits = logits[..., :-1, :].contiguous()
         # shift labels to exclude the first element
         labels = labels[..., 1:].contiguous()
         # Compute LM loss token-wise
-        loss: torch.tensor = F.cross_entropy(
-            logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=self.ignore_idx
-        )
+        loss: torch.tensor = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
         # Log LM loss
         self.log(f'Loss/{split.capitalize()}', loss)
 
         return wrapper_output, loss
 
     def training_step(self, mini_batch, mini_batch_idx: int) -> torch.tensor:
+        # Run generic forward step
         output, loss = self._step('Train', mini_batch, mini_batch_idx)
 
         return loss
 
     def _eval_step(self, split: str, mini_batch, mini_batch_idx: int):
-        # TODO add support for generative metrics
-        raise NotImplementedError()
+        # Unpack the encoding and the target labels
+        input_encodings, labels = mini_batch
+        # Run generic forward step
+        output, loss = self._step(split, mini_batch, mini_batch_idx)
+        # Take logits
+        logits: torch.tensor = output.logits
+        # Shift logits to exclude the last element
+        logits = logits[..., :-1, :].contiguous()
+        # shift labels to exclude the first element
+        labels = labels[..., 1:].contiguous()
+
+        # Log Perplexity
+        for metric_id, metric in self.metrics.values():
+            if metric_id == 'Perplexity':
+                metric.update(logits, labels)
+            else:
+                # TODO manage generative metrics
+                pass
+
+        return loss
 
     def validation_step(self, mini_batch, mini_batch_idx):
         return self._eval_step('Validation', mini_batch, mini_batch_idx)
@@ -1531,6 +1550,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         self._steps_per_epoch = len(data_loaders['train']) / self.trainer_params.get('accumulate_grad_batches', 1)
         # Create Trainer
         self.configure_metrics()
+        self.enable_benchmarking()
         trainer = L.Trainer(
             default_root_dir=dir_path,
             **self.trainer_params,

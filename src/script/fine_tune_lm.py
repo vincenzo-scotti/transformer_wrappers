@@ -22,12 +22,13 @@ def main(args: Namespace):
     # Build model
     model_type: Type[CausalLMWrapper] = causal_lm_mapping[configs['model'].pop('dtype')]
     model: CausalLMWrapper = model_type(**configs['model'])
-    model.enable_benchmarking()  # TODO check this step
     logging.info("Model built")
     # Create data set splits
     corpus_dtype: Type[Dataset] = corpus_mapping[configs['data']['corpus']]
     data_splits: Dict[str, Dataset] = {
-        split: corpus_dtype(split=split, **configs['data'].get('params', dict())) for split in configs['data']['splits']
+        split: corpus_dtype(
+            split, model.tokenizer, **configs['data'].get('params', dict())
+        ) for split in configs['data']['splits']
     }
     logging.info("Data set splits loaded")
     # Create callbacks
@@ -48,7 +49,7 @@ def main(args: Namespace):
     ]
     logging.info("Loggers instantiated")
     # Fit and evaluate model
-    model.set_fine_tuning_params(**configs['hyperaparameters'])
+    model.set_fine_tuning_params(**configs['hyperparameters'])
     model.fit_eval(
         data_splits, dir_path=configs['current_experiment_dir_path'], callbacks=callbacks, loggers=loggers
     )

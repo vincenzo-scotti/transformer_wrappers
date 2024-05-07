@@ -2,6 +2,7 @@
 experiment_series: <series>  # <wrapper_dtype>_<data_set>
 experiment_id: <model>
 experiments_dir_path: ./experiments/
+hf_token: &hf_token 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
 random_seed: 42
 log_file: true
 log_level: INFO
@@ -30,30 +31,45 @@ callbacks:
 # Model
 model:
   # Task
-  dtype: <task_dtype>  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
-  # Contextual embeddings
-  contextual_model:
-    dtype: RecurrentNetwork  # ...
-    # path: ...
-    # Static embeddings:
-    embedding_model:
-      dtype: <embedding_dtype>  # Word2Vec | GloVe | FastText | Def2Vec
-      path: ./resources/models/pre_trained/<model>  # ./resources/models/pre_trained/word_2_vec | ./resources/models/pre_trained/glove | ./resources/models/pre_trained/fast_text
-    # Hidden layers
-    hidden_layers:
-      # path: ...
-      n_layers: 3
-      hidden_size: 300  # 512
-      dropout_rate: 0.2
-      params:
-        recurrent_type: &recurrent_type gru
-        bidirectional: &bidirectional true
+  dtype: <wrapper_dtype>  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
+  # Model
+  pretrained_model_name_or_path: <model_path>  # mistralai/Mistral-7B-Instruct-v0.2 | google/gemma-7b | meta-llama/Llama-2-7b-hf
+  # Model kwargs
+  model_kwargs:
+    torch_dtype: &torch_dtype torch.bfloat16
+    device_map: cuda  # torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    token: *hf_token
+  # Quantization configs
+  quantization_configs:
+    load_in_4bit: true
+    bnb_4bit_use_double_quant: true
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_compute_dtype: *torch_dtype
+  # LoRA configs
+  lora_config:
+    target_modules: all-linear
+    lora_alpha: 16
+    lora_dropout: 0.1
+    r: 16
+    bias: none
+    task_type: CAUSAL_LM
+  # Tokenizer kwargs
+  tokenizer_kwargs:
+    token: *hf_token
+    pad_token: </s>
+  # Wrapper specific parameters
+  ## Parallel
+  # p_rate: 3
+  # block_parallel: true
+  # iterative: true
+  ## Character
+  max_token_len: 1
 # Model hyperparameters
-hyperaparameters:
+hyperparameters:
   # Optimiser
   optimiser_params:
     dtype: AdamW  # AdamW | RMSprop
-    lr: 6.25.e-5  # Learning rate
+    lr: 6.25e-5  # Learning rate
     # scale_parameter: false  # Used by AdaFactor
     # relative_step: false  # Used by AdaFactor
   # Trainer
@@ -67,12 +83,9 @@ hyperaparameters:
     train:
       batch_size: 1
       num_workers: &workers 4
-      # multiprocessing_context: &multiprocessing_context spawn
     validation:
       batch_size: &eval_bs 1
       num_workers: *workers
-      # multiprocessing_context: *multiprocessing_context
     test:
       batch_size: *eval_bs
       num_workers: *workers
-      # multiprocessing_context: *multiprocessing_context
