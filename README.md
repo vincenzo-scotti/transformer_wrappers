@@ -1,6 +1,6 @@
 # Transformer Wrappers
 
-Codebase for the project ...
+Codebase for the project.
 TODO add project description and link to Overleaf/paper
 
 ## Repository structure
