@@ -1,7 +1,8 @@
 import torch
 import torch.nn.functional as F
 from torchmetrics import Metric
-from parlai.core.metrics import BleuMetric, F1Metric, IntraDistinctMetric, InterDistinctMetric
+# from parlai.core.metrics import BleuMetric, F1Metric, IntraDistinctMetric, InterDistinctMetric
+BleuMetric, F1Metric, IntraDistinctMetric, InterDistinctMetric = (None, None, None, None)
 
 from collections import Counter
 

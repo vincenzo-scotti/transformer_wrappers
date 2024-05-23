@@ -1,9 +1,9 @@
-torch
-lightning
+torch==2.2.1
+lightning==2.2.1
 transformers
-accelerate
-peft
-jupyterlab
-matplotlib
-seaborn
+accelerate==0.30.1
+peft==0.9.0
+jupyterlab==4.1.3
+matplotlib==3.8.3
+seaborn==0.13.2
 dask[dataframe]
