@@ -1,11 +1,11 @@
 import os
-import sys
 import logging
 from shutil import copy2
 from datetime import datetime
 
-import torch
 import lightning as L
+from transformers import BitsAndBytesConfig
+from peft import LoraConfig
 
 import yaml
 
@@ -36,6 +36,11 @@ def init_training_environment(config_file_path: str) -> Dict:
     # Dump configs
     config_dump_file_path = os.path.join(current_experiment_dir_path, f'config.yml')
     copy2(config_file_path, config_dump_file_path)
+    # Complete configurations setup
+    if configs['model'].get('quantization_configs') is not None:
+        configs['model']['quantization_configs'] = BitsAndBytesConfig(**configs['model']['quantization_configs'])
+    if configs['model'].get('lora_configs') is not None:
+        configs['model']['lora_configs'] = LoraConfig(**configs['model']['lora_configs'])
     # Init logging
     if configs.get('log_file', False):
         log_file_path = os.path.join(current_experiment_dir_path, f'training.log')
