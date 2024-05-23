@@ -1461,7 +1461,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         # Unpack the encoding and the target labels
         input_encodings, labels = mini_batch
         # Compute output
-        wrapper_output = self.forward(input_encodings)
+        wrapper_output = self.forward(**input_encodings)
         # Compute logits
         logits: torch.tensor = wrapper_output.logits
         # Shift logits to exclude the last element
