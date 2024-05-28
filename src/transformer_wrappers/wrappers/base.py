@@ -17,6 +17,7 @@ from torchmetrics import MetricCollection
 from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
+from transformers.models.gpt2.modeling_gpt2 import GPT2MLP
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
@@ -364,14 +365,17 @@ class FeedForwardWrapper(ModuleWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Attribute names
-        self._gate_proj_attr: FFNNGateProjectionAttr = self._get_gate_proj_attr()
+        self._gate_proj_attr: Optional[FFNNGateProjectionAttr] = self._get_gate_proj_attr()
         self._up_proj_attr: FFNNUpProjectionAttr = self._get_up_proj_attr()
         self._down_proj_attr: FFNNDownProjectionAttr = self._get_down_proj_attr()
         self._act_fn_attr: FFNNActivationFunctionAttr = self._get_act_fn_attr()
         self._dropout_attr: Optional[FFNNDropoutAttr] = self._get_dropout_attr()
 
-    def _get_gate_proj_attr(self) -> FFNNGateProjectionAttr:
-        return _get_module_attr_name(self._module, FFNNGateProjectionAttr)
+    def _get_gate_proj_attr(self) -> Optional[FFNNGateProjectionAttr]:
+        try:
+            return _get_module_attr_name(self._module, FFNNGateProjectionAttr)
+        except ValueError:
+            return None
 
     def _get_up_proj_attr(self) -> FFNNUpProjectionAttr:
         return _get_module_attr_name(self._module, FFNNUpProjectionAttr)
@@ -390,7 +394,7 @@ class FeedForwardWrapper(ModuleWrapper):
 
     @property
     def gate_proj(self) -> nn.Module:
-        return getattr(self._module, self._gate_proj_attr.value)
+        return getattr(self._module, self._gate_proj_attr.value) if self._gate_proj_attr is not None else None
 
     @property
     def up_proj(self) -> nn.Module:
@@ -412,12 +416,48 @@ class FeedForwardWrapper(ModuleWrapper):
         if current_hidden_state is None:
             raise ValueError()
         #
-        # ffnn_output = self._module.forward(current_hidden_state)
-        if isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
-            inner_activations = self.act_fn(self.gate_proj(current_hidden_state)) * self.up_proj(current_hidden_state)
-            ffnn_output = self.down_proj(inner_activations)
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper._model, PeftModel):
+            # TODO find better fix to manage use of LoRA adapters and debugging
+            if kwargs[RETURN_FFNN_INNER_ACTIVATIONS]:
+                raise ValueError('Currently LoRA adapters are not compatible with fine grained module output analysis.')
+            inner_activations = None
+            ffnn_output = self._module.forward(current_hidden_state)
         else:
-            raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
+            if isinstance(self.super_wrapper.base_module, GPT2MLP):
+                inner_activations = self.act_fn(self.up_proj(current_hidden_state))
+                ffnn_output = self.down_proj(inner_activations)
+                ffnn_output = self.dropout(ffnn_output)
+            elif isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
+                inner_activations = self.act_fn(self.gate_proj(current_hidden_state)) * self.up_proj(current_hidden_state)
+                ffnn_output = self.down_proj(inner_activations)
+            elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer):
+                if self._module.config.pretraining_tp > 1:
+                    # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
+                    slice = self._module.intermediate_size // self._module.config.pretraining_tp
+                    gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+                    up_proj_slices = self.up_proj.weight.split(slice, dim=0)
+                    down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+
+                    gate_proj = torch.cat([
+                        F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                    ], dim=-1)
+                    up_proj = torch.cat([
+                        F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                    ], dim=-1)
+
+                    inner_activations = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
+                    ffnn_output = [
+                        F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                    ]
+                    ffnn_output = sum(ffnn_output)
+                else:
+                    inner_activations = (
+                            self.act_fn(self.gate_proj(current_hidden_state)) * self.up_proj(current_hidden_state)
+                    )
+                    ffnn_output = self.down_proj(inner_activations)
+            else:
+                raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
+
         #
         output = kwargs | {
             self.module_output: ffnn_output,
