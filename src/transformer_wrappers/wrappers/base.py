@@ -360,6 +360,8 @@ class FeedForwardWrapper(ModuleWrapper):
     module_output: str = FFNN_OUTPUT
     module_attr = LayerFeedForwardAttr
 
+    feed_forward_up_proj_output: str = FFNN_UP_PROJ_OUTPUT
+    feed_forward_gate_output: str = FFNN_GATE_OUTPUT
     feed_forward_inner_activations: str = FFNN_INNER_ACTIVATIONS
 
     def __init__(self, *args, **kwargs):
@@ -420,15 +422,19 @@ class FeedForwardWrapper(ModuleWrapper):
             # TODO find better fix to manage use of LoRA adapters and debugging
             if kwargs[RETURN_FFNN_INNER_ACTIVATIONS]:
                 raise ValueError('Currently LoRA adapters are not compatible with fine grained module output analysis.')
-            inner_activations = None
+            up_proj_output = gate_output = inner_activations = None
             ffnn_output = self._module.forward(current_hidden_state)
         else:
             if isinstance(self.super_wrapper.base_module, GPT2MLP):
-                inner_activations = self.act_fn(self.up_proj(current_hidden_state))
+                up_proj_output = self.up_proj(current_hidden_state)
+                gate_output = None
+                inner_activations = self.act_fn(up_proj_output)
                 ffnn_output = self.down_proj(inner_activations)
                 ffnn_output = self.dropout(ffnn_output)
             elif isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
-                inner_activations = self.act_fn(self.gate_proj(current_hidden_state)) * self.up_proj(current_hidden_state)
+                up_proj_output = self.up_proj(current_hidden_state)
+                gate_output = self.act_fn(self.gate_proj(current_hidden_state))
+                inner_activations = gate_output * up_proj_output
                 ffnn_output = self.down_proj(inner_activations)
             elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer):
                 if self._module.config.pretraining_tp > 1:
@@ -438,22 +444,23 @@ class FeedForwardWrapper(ModuleWrapper):
                     up_proj_slices = self.up_proj.weight.split(slice, dim=0)
                     down_proj_slices = self.down_proj.weight.split(slice, dim=1)
 
-                    gate_proj = torch.cat([
+                    gate_output = torch.cat([
                         F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
                     ], dim=-1)
-                    up_proj = torch.cat([
+                    gate_output = self.act_fn(gate_output)
+                    up_proj_output = torch.cat([
                         F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
                     ], dim=-1)
 
-                    inner_activations = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
+                    inner_activations = (gate_output * up_proj_output).split(slice, dim=2)
                     ffnn_output = [
                         F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
                     ]
                     ffnn_output = sum(ffnn_output)
                 else:
-                    inner_activations = (
-                            self.act_fn(self.gate_proj(current_hidden_state)) * self.up_proj(current_hidden_state)
-                    )
+                    up_proj_output = self.up_proj(current_hidden_state)
+                    gate_output = self.act_fn(self.gate_proj(current_hidden_state))
+                    inner_activations = gate_output * up_proj_output
                     ffnn_output = self.down_proj(inner_activations)
             else:
                 raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
@@ -461,6 +468,8 @@ class FeedForwardWrapper(ModuleWrapper):
         #
         output = kwargs | {
             self.module_output: ffnn_output,
+            self.feed_forward_up_proj_output: up_proj_output,
+            self.feed_forward_gate_output: gate_output,
             self.feed_forward_inner_activations: inner_activations,
             CURR_HIDDEN_STATE: current_hidden_state
         }
@@ -627,6 +636,8 @@ class LayerWrapper(ModuleWrapper):
             output_attentions: bool = False,  # Output attention weights
             return_intermediate_hidden_states: bool = False,  # Residual + self-attention layer output
             return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_up_proj_output: bool = False,
+            return_feed_forward_gate_output: bool = False,
             return_feed_forward_inner_activations: bool = False,
             return_feed_forward_output: bool = False,  # FFNN layer output
             **kwargs
@@ -657,6 +668,10 @@ class LayerWrapper(ModuleWrapper):
                 output[INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
+            if return_feed_forward_up_proj_output:
+                output[FFNN_UP_PROJ_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_up_proj_output]
+            if return_feed_forward_gate_output:
+                output[FFNN_GATE_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_gate_output]
             if return_feed_forward_inner_activations:
                 output[FFNN_INNER_ACTIVATIONS] = feed_forward_output[self.feed_forward_wrapper.feed_forward_inner_activations]
             if return_feed_forward_output:
@@ -668,6 +683,8 @@ class LayerWrapper(ModuleWrapper):
                 OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
                 RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
                 RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+                RETURN_FFNN_UP_PROJ_OUTPUT: return_feed_forward_up_proj_output,
+                RETURN_FFNN_GATE_OUTPUT: return_feed_forward_gate_output,
                 RETURN_FFNN_INNER_ACTIVATIONS: return_feed_forward_inner_activations,
                 RETURN_FFNN_OUTPUT: return_feed_forward_output
             }
@@ -731,6 +748,8 @@ class LayersWrapper(ModuleWrapper):
             output_hidden_states: bool = False,
             return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_up_proj_output: bool = False,
+            return_feed_forward_gate_output: bool = False,
             return_feed_forward_inner_activations: bool = False,
             return_feed_forward_output: bool = False,
             **kwargs
@@ -752,6 +771,12 @@ class LayersWrapper(ModuleWrapper):
         # Attention output
         if return_attention_output:
             kwargs[ATTN_OUTPUTS] = list()
+        # FFNN up-projection output
+        if return_feed_forward_up_proj_output:
+            kwargs[FFNN_UP_PROJ_OUTPUT] = list()
+        # FFNN gate output
+        if return_feed_forward_gate_output:
+            kwargs[FFNN_GATE_OUTPUT] = list()
         # FFNN inner activations
         if return_feed_forward_inner_activations:
             kwargs[FFNN_INNER_ACTIVATIONS] = list()
@@ -765,6 +790,8 @@ class LayersWrapper(ModuleWrapper):
             OUTPUT_HIDDEN_STATES: output_hidden_states,
             RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+            RETURN_FFNN_UP_PROJ_OUTPUT: return_feed_forward_up_proj_output,
+            RETURN_FFNN_GATE_OUTPUT: return_feed_forward_gate_output,
             RETURN_FFNN_INNER_ACTIVATIONS: return_feed_forward_inner_activations,
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
@@ -778,6 +805,8 @@ class LayersWrapper(ModuleWrapper):
             output_hidden_states: bool = False,
             return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_up_proj_output: bool = False,
+            return_feed_forward_gate_output: bool = False,
             return_feed_forward_inner_activations: bool = False,
             return_feed_forward_output: bool = False,
             layer_idx: int = -1,
@@ -806,6 +835,12 @@ class LayersWrapper(ModuleWrapper):
         # Attention output
         if return_attention_output:
             kwargs[ATTN_OUTPUTS].append(layer_output[ATTN_OUTPUT])
+        # FFNN up-projection output
+        if return_feed_forward_up_proj_output:
+            kwargs[FFNN_UP_PROJ_OUTPUT].append(layer_output[FFNN_UP_PROJ_OUTPUT])
+        # FFNN gate output
+        if return_feed_forward_gate_output:
+            kwargs[FFNN_GATE_OUTPUT].append(layer_output[FFNN_GATE_OUTPUT])
         # FFNN inner activations
         if return_feed_forward_inner_activations:
             kwargs[FFNN_INNER_ACTIVATIONS].append(layer_output[FFNN_INNER_ACTIVATIONS])
@@ -819,6 +854,8 @@ class LayersWrapper(ModuleWrapper):
             OUTPUT_HIDDEN_STATES: output_hidden_states,
             RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+            RETURN_FFNN_UP_PROJ_OUTPUT: return_feed_forward_up_proj_output,
+            RETURN_FFNN_GATE_OUTPUT: return_feed_forward_gate_output,
             RETURN_FFNN_INNER_ACTIVATIONS: return_feed_forward_inner_activations,
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
