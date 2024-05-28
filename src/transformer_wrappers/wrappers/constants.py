@@ -5,6 +5,7 @@ INPUT_EMBEDS: str = 'inputs_embeds'
 ATTENTION_MASK: str = 'attention_mask'
 POSITION_IDS: str = 'position_ids'
 PAST_KEY_VALUES: str = 'past_key_values'
+CACHE_POSITION: str = 'cache_position'
 
 LAYER_PAST: str = 'layer_past'
 PAST_KEY_VALUE: str = 'past_key_value'

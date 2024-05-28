@@ -702,7 +702,9 @@ class LayersWrapper(ModuleWrapper):
             else:
                 attention_mask = None
         elif isinstance(self.super_wrapper.base_model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
-            attention_mask = self.super_wrapper.base_model._update_causal_mask(valid_mask, kwargs[EMBEDDINGS])
+            attention_mask = self.super_wrapper.base_model._update_causal_mask(
+                valid_mask, kwargs[EMBEDDINGS], kwargs[CACHE_POSITION], kwargs[PAST_KEY_VALUES], kwargs[OUTPUT_ATTENTIONS]
+            )
             # TODO find better solution
             if attention_mask.size()[-2] != kwargs[SEQ_LENGTH] or attention_mask.size()[-1] != kwargs[SEQ_LENGTH]:
                 attention_mask = attention_mask[..., :kwargs[SEQ_LENGTH], :kwargs[SEQ_LENGTH]]
@@ -1041,6 +1043,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
+            cache_position: Optional[torch.LongTensor] = None,
             **kwargs
     ):
         #
@@ -1088,6 +1091,10 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 prefix_length = past_key_values.get_usable_length(seq_length)
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
+        if cache_position is None:
+            # TODO check back this part for corner case when sequence is longer that max len
+            if isinstance(self._model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
+                cache_position = torch.arange(prefix_length, prefix_length + seq_length, device=device)
         # Positions
         if position_ids is not None:
             if isinstance(self._model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
@@ -1121,6 +1128,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
             BATCH_SIZE: batch_size,
             PREFIX_LENGTH: prefix_length,
             SEQ_LENGTH: seq_length,
+            CACHE_POSITION: cache_position,
             DTYPE: dtype,
             DEVICE: device
         }
