@@ -41,6 +41,7 @@ CURR_KEY_VALUE: str = 'current_key_values'
 CURR_ATTN_WEIGHTS: str = 'current_attention_weights'
 
 INTERMEDIATE_HIDDEN_STATE: str = 'intermediate_hidden_state'
+FFNN_INNER_ACTIVATIONS: str = 'feed_forward_inner_activations'
 ATTN_OUTPUT: str = 'attention_output'
 FFNN_OUTPUT: str = 'feed_forward_output'
 
@@ -56,6 +57,7 @@ ADD_ATTN_RESIDUAL: str = 'add_attn_residual'
 ADD_FFNN_RESIDUAL: str = 'add_ffnn_residual'
 
 RETURN_INTERMEDIATE_HIDDEN_STATES: str = 'return_intermediate_hidden_state'
+RETURN_FFNN_INNER_ACTIVATIONS: str = 'return_feed_forward_inner_activations'
 RETURN_ATTENTION_OUTPUT: str = 'return_attention_output'
 RETURN_FFNN_OUTPUT: str = 'return_feed_forward_output'
 
