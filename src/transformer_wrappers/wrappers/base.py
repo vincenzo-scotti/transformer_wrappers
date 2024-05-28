@@ -87,13 +87,13 @@ class FFNNGateProjectionAttr(Enum):
 
 
 class FFNNActivationFunctionAttr(Enum):
-    DOWN_PROJ = 'down_proj'
-    C_PROJ = 'c_proj'
+    ACT_FN = 'act_fn'
+    ACT = 'act'
 
 
 class FFNNDownProjectionAttr(Enum):
-    ACT_FN = 'act_fn'
-    ACT = 'act'
+    DOWN_PROJ = 'down_proj'
+    C_PROJ = 'c_proj'
 
 
 class FFNNDropoutAttr(Enum):
@@ -557,7 +557,7 @@ class LayerWrapper(ModuleWrapper):
         # Feed-Forward
         ffnn_output = self.feed_forward_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
-        ).pop(self.feed_forward_wrapper.module_output)
+        )
         if add_ffnn_residual:
             current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output] + residual  # TODO verify this
         else:
