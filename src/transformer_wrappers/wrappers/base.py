@@ -316,7 +316,10 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        attn_output = self._module.forward(current_hidden_state, **attention_params)
+        if ...:
+            ...
+        else:
+            attn_output = self._module.forward(current_hidden_state, **attention_params)
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -417,54 +420,52 @@ class FeedForwardWrapper(ModuleWrapper):
     def _wrapped_forward(self, current_hidden_state: Optional[torch.FloatTensor], **kwargs):
         if current_hidden_state is None:
             raise ValueError()
+
+        fine_grained_output = any((
+            kwargs[RETURN_FFNN_INNER_ACTIVATIONS],
+            kwargs[RETURN_FFNN_UP_PROJ_OUTPUT],
+            kwargs[RETURN_FFNN_GATE_OUTPUT]
+        ))
         #
-        if isinstance(self.super_wrapper.base_module, GPT2MLP):
+        if not fine_grained_output:
+            up_proj_output = gate_output = inner_activations = None
+            ffnn_output = self._module.forward(current_hidden_state)
+        elif isinstance(self.super_wrapper.base_module, GPT2MLP):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = None
             inner_activations = self.act_fn(up_proj_output)
             ffnn_output = self.down_proj(inner_activations)
             ffnn_output = self.dropout(ffnn_output)
-        elif isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
+        elif (
+                isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)) or
+                (isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self._module.config.pretraining_tp <= 1)
+        ):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = self.act_fn(self.gate_proj(current_hidden_state))
             inner_activations = gate_output * up_proj_output
             ffnn_output = self.down_proj(inner_activations)
-        elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer):
-            if self._module.config.pretraining_tp > 1:
-                # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
-                slice = self._module.intermediate_size // self._module.config.pretraining_tp
-                gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
-                up_proj_slices = self.up_proj.weight.split(slice, dim=0)
-                down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+        elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self._module.config.pretraining_tp > 1:
+            # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
+            slice = self._module.intermediate_size // self._module.config.pretraining_tp
+            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+            up_proj_slices = self.up_proj.weight.split(slice, dim=0)
+            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
 
-                gate_output = torch.cat([
-                    F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                ], dim=-1)
-                gate_output = self.act_fn(gate_output)
-                up_proj_output = torch.cat([
-                    F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                ], dim=-1)
+            gate_output = torch.cat([
+                F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
+            ], dim=-1)
+            gate_output = self.act_fn(gate_output)
+            up_proj_output = torch.cat([
+                F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
+            ], dim=-1)
 
-                inner_activations = (gate_output * up_proj_output).split(slice, dim=2)
-                ffnn_output = [
-                    F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                ]
-                ffnn_output = sum(ffnn_output)
-            else:
-                up_proj_output = self.up_proj(current_hidden_state)
-                gate_output = self.act_fn(self.gate_proj(current_hidden_state))
-                inner_activations = gate_output * up_proj_output
-                ffnn_output = self.down_proj(inner_activations)
+            inner_activations = (gate_output * up_proj_output).split(slice, dim=2)
+            ffnn_output = [
+                F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
+            ]
+            ffnn_output = sum(ffnn_output)
         else:
-            if not any((
-                    kwargs[RETURN_FFNN_INNER_ACTIVATIONS],
-                    kwargs[RETURN_FFNN_UP_PROJ_OUTPUT],
-                    kwargs[RETURN_FFNN_GATE_OUTPUT]
-            )):
-                up_proj_output = gate_output = inner_activations = None
-                ffnn_output = self._module.forward(current_hidden_state)
-            else:
-                raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
+            raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
 
         #
         output = kwargs | {
