@@ -17,7 +17,7 @@ from torchmetrics import MetricCollection
 from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
-from transformers.models.gpt2.modeling_gpt2 import GPT2MLP
+from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
@@ -316,10 +316,16 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        if ...:
+        fine_grained_output = False
+        #
+        if not fine_grained_output:
+            attn_output = self._module.forward(current_hidden_state, **attention_params)
+        elif isinstance(self.super_wrapper.base_module, GPT2Block):
+            ...
+        elif isinstance(self.super_wrapper.base_module, SHARED_STRUCTURE_LAYERS):
             ...
         else:
-            attn_output = self._module.forward(current_hidden_state, **attention_params)
+            raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -430,7 +436,7 @@ class FeedForwardWrapper(ModuleWrapper):
         if not fine_grained_output:
             up_proj_output = gate_output = inner_activations = None
             ffnn_output = self._module.forward(current_hidden_state)
-        elif isinstance(self.super_wrapper.base_module, GPT2MLP):
+        elif isinstance(self.super_wrapper.base_module, GPT2Block):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = None
             inner_activations = self.act_fn(up_proj_output)
