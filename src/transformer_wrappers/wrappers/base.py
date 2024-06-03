@@ -418,11 +418,6 @@ class FeedForwardWrapper(ModuleWrapper):
         if current_hidden_state is None:
             raise ValueError()
         #
-        if isinstance(self.super_wrapper.super_wrapper.super_wrapper._model, PeftModel):
-            # TODO find better fix to manage use of LoRA adapters and debugging
-            if kwargs[RETURN_FFNN_INNER_ACTIVATIONS]:
-                raise ValueError('Currently LoRA adapters are not compatible with fine grained module output analysis.')
-
         if isinstance(self.super_wrapper.base_module, GPT2MLP):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = None
@@ -461,7 +456,11 @@ class FeedForwardWrapper(ModuleWrapper):
                 inner_activations = gate_output * up_proj_output
                 ffnn_output = self.down_proj(inner_activations)
         else:
-            if ...:
+            if not any((
+                    kwargs[RETURN_FFNN_INNER_ACTIVATIONS],
+                    kwargs[RETURN_FFNN_UP_PROJ_OUTPUT],
+                    kwargs[RETURN_FFNN_GATE_OUTPUT]
+            )):
                 up_proj_output = gate_output = inner_activations = None
                 ffnn_output = self._module.forward(current_hidden_state)
             else:
