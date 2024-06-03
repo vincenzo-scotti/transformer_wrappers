@@ -95,11 +95,11 @@ class ParallelLayerWrapper(LayerWrapper):
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.feed_forward_wrapper.module_output)
         if compensate_avg:
-            ffnn_output *= block_size
+            ffnn_output[self.feed_forward_wrapper.module_output] *= block_size
         if add_ffnn_residual:
-            current_hidden_state = ffnn_output + residual  # TODO verify this
+            current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output] + residual  # TODO verify this
         else:
-            current_hidden_state = ffnn_output
+            current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output]
         # Extend input with module output
         output = kwargs | {
             CURR_HIDDEN_STATE: current_hidden_state,
@@ -164,6 +164,9 @@ class ParallelLayersWrapper(LayersWrapper):
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
+            return_feed_forward_up_proj_output: bool = False,
+            return_feed_forward_gate_output: bool = False,
+            return_feed_forward_inner_activations: bool = False,
             return_feed_forward_output: bool = False,
             layer_idx: Optional[int] = None,
             add_attn_residual: bool = True,
@@ -204,6 +207,15 @@ class ParallelLayersWrapper(LayersWrapper):
             # Attention output
             if return_attention_output and not skip_attention:
                 kwargs[ATTN_OUTPUTS].append(layer_output[ATTN_OUTPUT])
+            # FFNN up-projection output
+            if return_feed_forward_up_proj_output:
+                kwargs[FFNN_UP_PROJ_OUTPUT].append(layer_output[CURR_FFNN_UP_PROJ_OUTPUT])
+            # FFNN gate output
+            if return_feed_forward_gate_output:
+                kwargs[FFNN_GATE_OUTPUT].append(layer_output[CURR_FFNN_GATE_OUTPUT])
+            # FFNN inner activations
+            if return_feed_forward_inner_activations:
+                kwargs[FFNN_INNER_ACTIVATIONS].append(layer_output[CURR_FFNN_INNER_ACTIVATIONS])
             # FFNN output
             if return_feed_forward_output and not skip_ffnn:
                 kwargs[FFNN_OUTPUTS].append(layer_output[FFNN_OUTPUT])
@@ -401,4 +413,3 @@ class ParallelCausalLMWrapper(CausalLMWrapper):
         }
 
         return inputs
-
