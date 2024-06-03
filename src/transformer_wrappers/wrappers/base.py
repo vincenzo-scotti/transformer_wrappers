@@ -281,7 +281,7 @@ class AttentionWrapper(ModuleWrapper):
 
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
-    intermediate_hidden_state: str = INTERMEDIATE_HIDDEN_STATE
+    intermediate_hidden_state: str = CURR_INTERMEDIATE_HIDDEN_STATE
 
     def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
@@ -316,7 +316,10 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        attn_output = self._module.forward(current_hidden_state, **attention_params)
+        if isinstance(self.super_wrapper.super_wrapper.super_wrapper._model, PeftModel):
+            attn_output = self._module.forward(current_hidden_state, **attention_params)
+        else:
+            ...
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -346,7 +349,7 @@ class AttentionWrapper(ModuleWrapper):
                 else:
                     output = dict(zip((self.module_output, self.key_value), module_output))
             elif len(module_output) == 1:
-                output = {dict(zip((self.module_output,), module_output))}
+                output = dict(zip((self.module_output,), module_output))
             else:
                 raise ValueError()
             #
@@ -360,9 +363,9 @@ class FeedForwardWrapper(ModuleWrapper):
     module_output: str = FFNN_OUTPUT
     module_attr = LayerFeedForwardAttr
 
-    feed_forward_up_proj_output: str = FFNN_UP_PROJ_OUTPUT
-    feed_forward_gate_output: str = FFNN_GATE_OUTPUT
-    feed_forward_inner_activations: str = FFNN_INNER_ACTIVATIONS
+    feed_forward_up_proj_output: str = CURR_FFNN_UP_PROJ_OUTPUT
+    feed_forward_gate_output: str = CURR_FFNN_GATE_OUTPUT
+    feed_forward_inner_activations: str = CURR_FFNN_INNER_ACTIVATIONS
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -475,6 +478,33 @@ class FeedForwardWrapper(ModuleWrapper):
         }
 
         return output
+
+    def _post_process_output(
+            self,
+            base_model_output: bool = False,
+            output_attentions: bool = False,  # Output attention weights
+            **kwargs
+    ):
+        #
+        if base_model_output:
+            #
+            return kwargs[self.module_output]
+        else:
+            #
+            output = {self.module_output: kwargs.pop(self.module_output)}
+            feed_forward_up_proj_output = kwargs.pop(self.feed_forward_up_proj_output, None)
+            if feed_forward_up_proj_output is not None:
+                kwargs[self.module_output][self.feed_forward_up_proj_output] = feed_forward_up_proj_output
+            feed_forward_gate_output = kwargs.pop(self.feed_forward_gate_output, None)
+            if feed_forward_gate_output is not None:
+                kwargs[self.module_output][self.feed_forward_gate_output] = feed_forward_gate_output
+            feed_forward_inner_activations = kwargs.pop(self.feed_forward_inner_activations, None)
+            if kwargs.get(self.feed_forward_inner_activations) is not None:
+                kwargs[self.module_output][self.feed_forward_inner_activations] = feed_forward_inner_activations
+            #
+            kwargs |= {self.module_output: output}
+
+            return kwargs
 
 
 class LayerWrapper(ModuleWrapper):
@@ -665,15 +695,15 @@ class LayerWrapper(ModuleWrapper):
             if use_cache:
                 output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
             if return_intermediate_hidden_states:
-                output[INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
+                output[CURR_INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_up_proj_output:
-                output[FFNN_UP_PROJ_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_up_proj_output]
+                output[CURR_FFNN_UP_PROJ_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_up_proj_output]
             if return_feed_forward_gate_output:
-                output[FFNN_GATE_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_gate_output]
+                output[CURR_FFNN_GATE_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_gate_output]
             if return_feed_forward_inner_activations:
-                output[FFNN_INNER_ACTIVATIONS] = feed_forward_output[self.feed_forward_wrapper.feed_forward_inner_activations]
+                output[CURR_FFNN_INNER_ACTIVATIONS] = feed_forward_output[self.feed_forward_wrapper.feed_forward_inner_activations]
             if return_feed_forward_output:
                 output[FFNN_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.module_output]
 
@@ -837,13 +867,13 @@ class LayersWrapper(ModuleWrapper):
             kwargs[ATTN_OUTPUTS].append(layer_output[ATTN_OUTPUT])
         # FFNN up-projection output
         if return_feed_forward_up_proj_output:
-            kwargs[FFNN_UP_PROJ_OUTPUT].append(layer_output[FFNN_UP_PROJ_OUTPUT])
+            kwargs[FFNN_UP_PROJ_OUTPUT].append(layer_output[CURR_FFNN_UP_PROJ_OUTPUT])
         # FFNN gate output
         if return_feed_forward_gate_output:
-            kwargs[FFNN_GATE_OUTPUT].append(layer_output[FFNN_GATE_OUTPUT])
+            kwargs[FFNN_GATE_OUTPUT].append(layer_output[CURR_FFNN_GATE_OUTPUT])
         # FFNN inner activations
         if return_feed_forward_inner_activations:
-            kwargs[FFNN_INNER_ACTIVATIONS].append(layer_output[FFNN_INNER_ACTIVATIONS])
+            kwargs[FFNN_INNER_ACTIVATIONS].append(layer_output[CURR_FFNN_INNER_ACTIVATIONS])
         # FFNN output
         if return_feed_forward_output:
             kwargs[FFNN_OUTPUTS].append(layer_output[FFNN_OUTPUT])

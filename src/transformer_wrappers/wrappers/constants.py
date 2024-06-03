@@ -36,14 +36,22 @@ DEVICE: str = 'device'
 ATTN_PARAMS: str = 'attention_params'
 
 INPUT_HIDDEN_STATE: str = 'input_hidden_state'
+
 CURR_HIDDEN_STATE: str = 'current_hidden_state'
 CURR_KEY_VALUE: str = 'current_key_values'
 CURR_ATTN_WEIGHTS: str = 'current_attention_weights'
+CURR_INTERMEDIATE_HIDDEN_STATE: str = 'current_intermediate_hidden_state'
 
 INTERMEDIATE_HIDDEN_STATE: str = 'intermediate_hidden_state'
+
+CURR_FFNN_UP_PROJ_OUTPUT: str = 'current_feed_forward_up_proj_output'
+CURR_FFNN_GATE_OUTPUT: str = 'current_feed_forward_gate_output'
+CURR_FFNN_INNER_ACTIVATIONS: str = 'current_feed_forward_inner_activations'
+
 FFNN_UP_PROJ_OUTPUT: str = 'feed_forward_up_proj_output'
 FFNN_GATE_OUTPUT: str = 'feed_forward_gate_output'
 FFNN_INNER_ACTIVATIONS: str = 'feed_forward_inner_activations'
+
 ATTN_OUTPUT: str = 'attention_output'
 FFNN_OUTPUT: str = 'feed_forward_output'
 
