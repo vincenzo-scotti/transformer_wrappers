@@ -316,10 +316,7 @@ class AttentionWrapper(ModuleWrapper):
         if attention_params is None:
             raise ValueError()
         #
-        if isinstance(self.super_wrapper.super_wrapper.super_wrapper._model, PeftModel):
-            attn_output = self._module.forward(current_hidden_state, **attention_params)
-        else:
-            ...
+        attn_output = self._module.forward(current_hidden_state, **attention_params)
         #
         output = kwargs | {self.module_output: attn_output, CURR_HIDDEN_STATE: current_hidden_state}
 
@@ -425,46 +422,48 @@ class FeedForwardWrapper(ModuleWrapper):
             # TODO find better fix to manage use of LoRA adapters and debugging
             if kwargs[RETURN_FFNN_INNER_ACTIVATIONS]:
                 raise ValueError('Currently LoRA adapters are not compatible with fine grained module output analysis.')
-            up_proj_output = gate_output = inner_activations = None
-            ffnn_output = self._module.forward(current_hidden_state)
-        else:
-            if isinstance(self.super_wrapper.base_module, GPT2MLP):
-                up_proj_output = self.up_proj(current_hidden_state)
-                gate_output = None
-                inner_activations = self.act_fn(up_proj_output)
-                ffnn_output = self.down_proj(inner_activations)
-                ffnn_output = self.dropout(ffnn_output)
-            elif isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
+
+        if isinstance(self.super_wrapper.base_module, GPT2MLP):
+            up_proj_output = self.up_proj(current_hidden_state)
+            gate_output = None
+            inner_activations = self.act_fn(up_proj_output)
+            ffnn_output = self.down_proj(inner_activations)
+            ffnn_output = self.dropout(ffnn_output)
+        elif isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)):
+            up_proj_output = self.up_proj(current_hidden_state)
+            gate_output = self.act_fn(self.gate_proj(current_hidden_state))
+            inner_activations = gate_output * up_proj_output
+            ffnn_output = self.down_proj(inner_activations)
+        elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer):
+            if self._module.config.pretraining_tp > 1:
+                # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
+                slice = self._module.intermediate_size // self._module.config.pretraining_tp
+                gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
+                up_proj_slices = self.up_proj.weight.split(slice, dim=0)
+                down_proj_slices = self.down_proj.weight.split(slice, dim=1)
+
+                gate_output = torch.cat([
+                    F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                ], dim=-1)
+                gate_output = self.act_fn(gate_output)
+                up_proj_output = torch.cat([
+                    F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                ], dim=-1)
+
+                inner_activations = (gate_output * up_proj_output).split(slice, dim=2)
+                ffnn_output = [
+                    F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
+                ]
+                ffnn_output = sum(ffnn_output)
+            else:
                 up_proj_output = self.up_proj(current_hidden_state)
                 gate_output = self.act_fn(self.gate_proj(current_hidden_state))
                 inner_activations = gate_output * up_proj_output
                 ffnn_output = self.down_proj(inner_activations)
-            elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer):
-                if self._module.config.pretraining_tp > 1:
-                    # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
-                    slice = self._module.intermediate_size // self._module.config.pretraining_tp
-                    gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
-                    up_proj_slices = self.up_proj.weight.split(slice, dim=0)
-                    down_proj_slices = self.down_proj.weight.split(slice, dim=1)
-
-                    gate_output = torch.cat([
-                        F.linear(current_hidden_state, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                    ], dim=-1)
-                    gate_output = self.act_fn(gate_output)
-                    up_proj_output = torch.cat([
-                        F.linear(current_hidden_state, up_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                    ], dim=-1)
-
-                    inner_activations = (gate_output * up_proj_output).split(slice, dim=2)
-                    ffnn_output = [
-                        F.linear(inner_activations[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
-                    ]
-                    ffnn_output = sum(ffnn_output)
-                else:
-                    up_proj_output = self.up_proj(current_hidden_state)
-                    gate_output = self.act_fn(self.gate_proj(current_hidden_state))
-                    inner_activations = gate_output * up_proj_output
-                    ffnn_output = self.down_proj(inner_activations)
+        else:
+            if ...:
+                up_proj_output = gate_output = inner_activations = None
+                ffnn_output = self._module.forward(current_hidden_state)
             else:
                 raise NotImplementedError(f'Unsupported layer type: `{type(self.super_wrapper.base_module)}`.')
 
@@ -494,13 +493,13 @@ class FeedForwardWrapper(ModuleWrapper):
             output = {self.module_output: kwargs.pop(self.module_output)}
             feed_forward_up_proj_output = kwargs.pop(self.feed_forward_up_proj_output, None)
             if feed_forward_up_proj_output is not None:
-                kwargs[self.module_output][self.feed_forward_up_proj_output] = feed_forward_up_proj_output
+                output[self.feed_forward_up_proj_output] = feed_forward_up_proj_output
             feed_forward_gate_output = kwargs.pop(self.feed_forward_gate_output, None)
             if feed_forward_gate_output is not None:
-                kwargs[self.module_output][self.feed_forward_gate_output] = feed_forward_gate_output
+                output[self.feed_forward_gate_output] = feed_forward_gate_output
             feed_forward_inner_activations = kwargs.pop(self.feed_forward_inner_activations, None)
             if kwargs.get(self.feed_forward_inner_activations) is not None:
-                kwargs[self.module_output][self.feed_forward_inner_activations] = feed_forward_inner_activations
+                output[self.feed_forward_inner_activations] = feed_forward_inner_activations
             #
             kwargs |= {self.module_output: output}
 
