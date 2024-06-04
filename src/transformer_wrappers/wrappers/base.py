@@ -157,15 +157,22 @@ def _get_module_attr_name(model: nn.Module, attr_names: Type[AttrEnumTypes]):
 
 
 class BaseWrapper:
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self._is_wrapping: bool = True
+
     @property
     def is_wrapping(self) -> bool:
-        return True
+        return self._is_wrapping
 
     def enable_wrapper(self):
-        pass
+        if not self.is_wrapping:
+            self._is_wrapping = True
 
     def disable_wrapper(self):
-        pass
+        if self.is_wrapping:
+            self._is_wrapping = False
 
     def _pre_process_input(self, *args, **kwargs):
         return kwargs
@@ -226,7 +233,8 @@ class ModuleWrapper(nn.Module, BaseWrapper):
             return kwargs
 
     def forward(self, *args, base_model_output: bool = False, **kwargs):
-        self.enable_wrapper()
+        if not self.is_wrapping:
+            return self.base_module.forward(*args, **kwargs)
         # Pre-process input
         kwargs = self._pre_process_input(*args, **kwargs)
         # Apply layer transformation
@@ -1127,7 +1135,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             return kwargs
 
     def forward(self, *args, base_model_output: bool = False, **kwargs):
-        self.enable_wrapper()
+        if not self.is_wrapping:
+            return self.base_model.forward(*args, **kwargs)
         # Pre-process input
         kwargs = self._pre_process_input(*args, **kwargs)
         # Apply layer transformation
@@ -1487,6 +1496,20 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             self.enable_transformer_wrapper()
             self.enable_lm_head_wrapper()
 
+    def disable_transformer_wrapper(self):
+        if self.is_transformer_wrapping:
+            self.transformer_wrapper.disable_wrapper()
+            setattr(self._model, self._transformer_attr.value, self._transformer_wrapper.base_module)
+
+    def disable_lm_head_wrapper(self):
+        if self.is_lm_head_wrapping:
+            setattr(self._model, self._lm_head_attr.value, self._lm_head_wrapper.base_module)
+
+    def disable_wrapper(self):
+        if self.is_wrapping:
+            self.disable_transformer_wrapper()
+            self.disable_lm_head_wrapper()
+
     @property
     def transformer(self) -> PreTrainedModel:
         return self._transformer_wrapper.base_model
@@ -1588,6 +1611,10 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
         return_inner_states = return_inner_states or self._benchmarking
+
+        if not self.is_wrapping:
+            return self.base_model.generate(*args, **kwargs)
+
         #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
@@ -1611,7 +1638,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
     def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
         # TODO fix Llama and Gemma generation issue
-        self.enable_wrapper()
+        if not self.is_wrapping:
+            return self._model.prepare_inputs_for_generation(*args, **kwargs)
         #
         inputs = self._model.prepare_inputs_for_generation(
             *args, **kwargs
