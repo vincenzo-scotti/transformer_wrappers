@@ -294,17 +294,6 @@ class CirctuitTransformerWrapper(TransformerWrapper):
 
         return kwargs
 
-    def forward(self, *args, base_model_output: bool = False, **kwargs):
-        self.enable_wrapper()
-        # Pre-process input
-        kwargs = self._pre_process_input(*args, **kwargs)
-        # Apply layer transformation
-        output = self._wrapped_forward(**kwargs)
-        # Post-process output
-        output = self._post_process_output(base_model_output=base_model_output, **output)
-
-        return output
-
 
 class CircuitCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[TransformerWrapper] = CirctuitTransformerWrapper
@@ -327,7 +316,7 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
         if overwrite_activations:
             # Force value to activations
             # Model forward for input encoding
-            self.enable_wrapper()
+            # self.enable_wrapper()
             output_forward = self.forward(
                 **input_encodings,
                 return_dict=True,
@@ -343,10 +332,10 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
             )
             input_ids = torch.cat(
                 [input_encodings['input_ids'], torch.argmax(output_forward['logits'][0, -1]).reshape(1, 1)], dim=1)
+
             # Generate with past key values
             # self.enable_benchmarking()
             self.disable_wrapper()
-
             generated_output = self.generate(
                 input_ids,
                 past_key_values=output_forward["past_key_values"],
@@ -354,6 +343,7 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
                 do_sample=False
             )
             self.enable_wrapper()
+
             output_str = self.tokenizer.decode(generated_output['output_ids'].squeeze(),
                                                return_tensors='pt'
                                                )
@@ -364,9 +354,6 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
             output = self.model.generate(input_encodings.input_ids,
                                          do_sample=do_sample,
                                          max_length=max_length)
-            output_str = self.tokenizer.decode(output['output_ids'].squeeze(),
-                                               return_tensors='pt'
-                                               )
+            output_str = self.tokenizer.decode(output['output_ids'].squeeze())
             result_substring = output_str.split('=')[1].split("\n")[0]
             result = int("".join([ele for ele in result_substring if ele.isdigit()]))
-
