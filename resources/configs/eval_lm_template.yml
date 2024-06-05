@@ -1,0 +1,50 @@
+# Main
+experiment_series: <series>  # <wrapper_dtype>
+experiment_id: <model>_<wrapper>
+experiments_dir_path: ./experiments/
+hf_token: &hf_token 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
+random_seed: 42
+log_file: true
+log_level: INFO
+# LM evaluation harness configs
+lm_eval:
+  tasks:
+    - hellaswag
+    - winogrande
+    - truthfulqa_mc1
+    - gsm8k
+    - arc_challenge
+    - mmlu
+  batch_size: 4
+  log_samples: true
+  output_path: null  # Will be set to the current experiment directory if null
+  random_seed: &random_seed 42
+  numpy_random_seed: *random_seed
+  torch_random_seed: *random_seed
+  fewshot_random_seed: *random_seed
+# Model
+model:
+  # Task
+  dtype: <wrapper_dtype>  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
+  # Model
+  pretrained_model_name_or_path: <model_path>  # mistralai/Mistral-7B-Instruct-v0.2 | google/gemma-7b | meta-llama/Llama-2-7b-hf
+  # Model kwargs
+  model_kwargs:
+    torch_dtype: &torch_dtype torch.bfloat16
+    device_map: cuda  # torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    token: *hf_token
+  # Quantization configs
+  quantization_configs:
+    load_in_4bit: true
+    bnb_4bit_use_double_quant: true
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_compute_dtype: *torch_dtype
+  # Tokenizer kwargs
+  tokenizer_kwargs:
+    token: *hf_token
+    pad_token: </s>
+# Experimental configs
+exp:
+  params: {}
+  param_groups: []
+  overwrite: false  # Whether to repeat experiments with results that already exist
