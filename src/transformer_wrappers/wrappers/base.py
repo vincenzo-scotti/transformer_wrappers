@@ -512,7 +512,7 @@ class FeedForwardWrapper(ModuleWrapper):
             if feed_forward_gate_output is not None:
                 output[self.feed_forward_gate_output] = feed_forward_gate_output
             feed_forward_inner_activations = kwargs.pop(self.feed_forward_inner_activations, None)
-            if kwargs.get(self.feed_forward_inner_activations) is not None:
+            if feed_forward_inner_activations is not None:
                 output[self.feed_forward_inner_activations] = feed_forward_inner_activations
             #
             kwargs |= {self.module_output: output}
