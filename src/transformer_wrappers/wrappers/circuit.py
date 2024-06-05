@@ -10,8 +10,6 @@ from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
 
 from transformers import logging
 
-
-
 from .constants import *
 
 from .base import FeedForwardWrapper, LayerWrapper, LayersWrapper, TransformerWrapper, \
@@ -313,47 +311,40 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
         first_output_digit_index = len(self.tokenizer.convert_ids_to_tokens(
             input_encodings['input_ids'].squeeze()))
 
-        if overwrite_activations:
-            # Force value to activations
-            # Model forward for input encoding
-            # self.enable_wrapper()
-            output_forward = self.forward(
-                **input_encodings,
-                return_dict=True,
-                output_attentions=False,
-                use_cache=True,
-                output_hidden_states=False,
-                return_attention_output=False,  # Self-attention layer output
-                return_feed_forward_output=False,
-                return_feed_forward_inner_activations=False,
-                return_feed_forward_up_proj_output=False,
-                return_feed_forward_gate_output=True,
-                overwrite_activations=overwrite_activations
-            )
-            input_ids = torch.cat(
-                [input_encodings['input_ids'], torch.argmax(output_forward['logits'][0, -1]).reshape(1, 1)], dim=1)
+        # Force value to activations
+        # Model forward for input encoding
+        self.enable_wrapper()
+        output_forward = self.forward(
+            **input_encodings,
+            return_dict=True,
+            output_attentions=False,
+            use_cache=True,
+            output_hidden_states=False,
+            return_attention_output=False,  # Self-attention layer output
+            return_feed_forward_output=False,
+            return_feed_forward_inner_activations=False,
+            return_feed_forward_up_proj_output=False,
+            return_feed_forward_gate_output=True,
+            overwrite_activations=overwrite_activations
+        )
+        print(output_forward.keys())
+        input_ids = torch.cat(
+            [input_encodings['input_ids'], torch.argmax(output_forward['logits'][0, -1]).reshape(1, 1)], dim=1)
 
-            # Generate with past key values
-            # self.enable_benchmarking()
-            self.disable_wrapper()
-            generated_output = self.generate(
-                input_ids,
-                past_key_values=output_forward["past_key_values"],
-                max_length=16,
-                do_sample=False
-            )
-            self.enable_wrapper()
+        # Generate with past key values
+        # self.enable_benchmarking()
+        self.disable_wrapper()
+        generated_output = self.generate(
+            input_ids,
+            past_key_values=output_forward["past_key_values"],
+            max_length=16,
+            do_sample=False
+        )
+        self.enable_wrapper()
 
-            output_str = self.tokenizer.decode(generated_output['output_ids'].squeeze(),
-                                               return_tensors='pt'
-                                               )
-            result_substring = output_str.split('=')[1].split("\n")[0]
+        output_str = self.tokenizer.decode(generated_output.squeeze(),
+                                           return_tensors='pt'
+                                           )
+        result_substring = output_str.split('=')[1].split("\n")[0]
 
-            return result_substring
-        else:
-            output = self.model.generate(input_encodings.input_ids,
-                                         do_sample=do_sample,
-                                         max_length=max_length)
-            output_str = self.tokenizer.decode(output['output_ids'].squeeze())
-            result_substring = output_str.split('=')[1].split("\n")[0]
-            result = int("".join([ele for ele in result_substring if ele.isdigit()]))
+        return result_substring, output_forward
