@@ -41,6 +41,8 @@ data:
     - train
     - validation
     - test
+  params:
+    max_seq_len: 128
   loader:  # Data loader parameters
     train:
       batch_size: 4

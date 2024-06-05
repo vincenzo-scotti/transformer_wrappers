@@ -62,7 +62,7 @@ def main(args: Namespace):
 if __name__ == "__main__":
     # Instantiate argument parser
     args_parser: ArgumentParser = ArgumentParser(
-        prog='fit_eval_script',
+        prog='fine_tune_lm_script',
         description='Script to fine-tune and evaluate a causal transformer LM wrapper'
     )
     # Add arguments to parser
