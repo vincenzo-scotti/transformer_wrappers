@@ -30,7 +30,7 @@ from transformers.modeling_attn_mask_utils import (
 from transformers import logging
 
 from transformers import BitsAndBytesConfig
-from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model
+from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, AutoPeftModel, AutoPeftModelForCausalLM
 from peft.peft_model import PeftModel
 
 from .constants import *
@@ -999,6 +999,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     model_output: str = 'model_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = None
+    _auto_peft_model_dtype: Optional[Type[PeftModel]] = None
 
     # TODO fix-me this is a temporary solution to use non-eager attention
     # _supports_flash_attn_2 = True
@@ -1028,6 +1029,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             model_kwargs: Optional[Dict] = None,
             quantization_configs: Optional[BitsAndBytesConfig] = None,
             lora_configs: Optional[LoraConfig] = None,
+            is_peft: bool = False,
             gradient_checkpointing: bool = False,
             tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
@@ -1048,7 +1050,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
         model_kwargs[cls.TASK_SPECIFIC_CONFIGS_KEY] = task_specific_configs | {cls.WRAPPER_CONFIGS_KEY: wrapper_kwargs}
         #
-        model = cls._auto_model_dtype.from_pretrained(
+        auto_model_dtype = cls._auto_model_dtype if not is_peft else cls._auto_peft_model_dtype
+        model = auto_model_dtype.from_pretrained(
                 pretrained_model_name_or_path, *model_args, **model_kwargs,
             )
         if gradient_checkpointing:
@@ -1066,7 +1069,13 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         return wrapper
 
     def save_pretrained(self, *args, **kwargs):
+        # TODO fixme it seems that this method is not being called
+        is_wrapping = self.is_wrapping
+        if is_wrapping:
+            self.disable_wrapper()
         self.base_model.save_pretrained(*args, **kwargs)
+        if is_wrapping:
+            self.enable_wrapper()
 
     @property
     def base_model(self) -> PreTrainedModel:
@@ -1152,6 +1161,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
     model_output: str = 'transformer_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModel
+    _auto_peft_model_dtype: Optional[Type[PeftModel]] = AutoPeftModel
 
     _embedding_dtype: Type[ModuleWrapper] = EmbeddingWrapper
     _layers_dtype: Type[ModuleWrapper] = LayersWrapper
@@ -1415,6 +1425,9 @@ class TransformerWrapper(PreTrainedModelWrapper):
 
             return kwargs
 
+    def get_input_embeddings(self):
+        return self.embedding_wrapper.base_module
+
     # TODO implement other PreTrainedModel methods
 
 
@@ -1437,6 +1450,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     model_output: str = 'causal_language_model_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
+    _auto_peft_model_dtype: Optional[Type[PeftModel]] = AutoPeftModelForCausalLM
 
     _transformer_dtype: Type[TransformerWrapper] = TransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
@@ -1829,3 +1843,6 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         logging.info(f"Testing completed (elapsed time: {stop_time - start_time})")
 
         return self
+
+    def get_input_embeddings(self):
+        return self.transformer_wrapper.get_input_embeddings()
