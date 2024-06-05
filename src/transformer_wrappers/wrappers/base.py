@@ -233,8 +233,8 @@ class ModuleWrapper(nn.Module, BaseWrapper):
             return kwargs
 
     def forward(self, *args, base_model_output: bool = False, **kwargs):
-        if not self.is_wrapping:
-            return self.base_module.forward(*args, **kwargs)
+        # if not self.is_wrapping:
+        #     return self.base_module.forward(*args, **kwargs)
         # Pre-process input
         kwargs = self._pre_process_input(*args, **kwargs)
         # Apply layer transformation
@@ -1810,9 +1810,12 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         logging.info(f"Training completed (elapsed time: {stop_time - start_time})")
         # Load torch checkpoint
         if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
-            checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
-            self.load_state_dict(checkpoint['state_dict'])
-            logging.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
+            if os.path.exists(callbacks['model_checkpoint'].best_model_path):
+                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
+                self.load_state_dict(checkpoint['state_dict'])
+                logging.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
+            else:
+                logging.info(f"No checkpoint to restore")
         # Test neural network
         start_time = datetime.now()
         logging.info("Validation started")
