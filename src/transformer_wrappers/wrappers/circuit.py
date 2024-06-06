@@ -186,7 +186,9 @@ class CircuitFeedForwardWrapper(FeedForwardWrapper):
             up_proj_output = self.up_proj(current_hidden_state)
             # Force up activations
             if up_proj is not None:
-                up_proj_output[..., -1, up_proj['indices']] = up_proj['values']
+                up_proj_output[..., -1, up_proj['indices']] = torch.tensor(up_proj['values'],
+                                                                      dtype=up_proj_output.dtype,
+                                                                      device=up_proj_output.device)
 
             gate_output = self.act_fn(self.gate_proj(current_hidden_state))
             # Force up activations
@@ -197,11 +199,15 @@ class CircuitFeedForwardWrapper(FeedForwardWrapper):
 
             inner_activations = gate_output * up_proj_output
             if inner_act is not None:
-                inner_activations[..., -1, inner_act['indices']] = inner_act['values']
+                inner_activations[..., -1, inner_act['indices']] = torch.tensor(inner_act['values'],
+                                                                              dtype=inner_activations.dtype,
+                                                                              device=inner_activations.device)
 
             ffnn_output = self.down_proj(inner_activations)
             if down_proj is not None:
-                ffnn_output[..., -1, down_proj['indices']] = down_proj['values']
+                ffnn_output[..., -1, down_proj['indices']] = torch.tensor(down_proj['values'],
+                                                                              dtype=ffnn_output.dtype,
+                                                                              device=ffnn_output.device)
 
         elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self._module.config.pretraining_tp > 1:
             # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
@@ -327,7 +333,7 @@ class CircuitCausalLMWrapper(CausalLMWrapper):
             return_feed_forward_gate_output=True,
             overwrite_activations=overwrite_activations
         )
-        print(output_forward.keys())
+
         input_ids = torch.cat(
             [input_encodings['input_ids'], torch.argmax(output_forward['logits'][0, -1]).reshape(1, 1)], dim=1)
 
