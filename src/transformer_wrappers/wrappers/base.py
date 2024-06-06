@@ -1688,13 +1688,13 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
     def configure_metrics(self):
         metrics = {'Perplexity': PPLScore()}
-        metrics |= {
-                f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4)
-            } | {
-                'F1': F1Score()
-            } | {
-                f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
-            }
+        # metrics |= {
+        #         f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4)
+        #     } | {
+        #         'F1': F1Score()
+        #     } | {
+        #         f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
+        #     }
 
         self.metrics = MetricCollection(metrics)
 
