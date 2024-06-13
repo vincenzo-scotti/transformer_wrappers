@@ -436,9 +436,9 @@ class FeedForwardWrapper(ModuleWrapper):
             raise ValueError()
 
         fine_grained_output = any((
-            kwargs[RETURN_FFNN_INNER_ACTIVATIONS],
-            kwargs[RETURN_FFNN_UP_PROJ_OUTPUT],
-            kwargs[RETURN_FFNN_GATE_OUTPUT]
+            kwargs.get(RETURN_FFNN_INNER_ACTIVATIONS, False),
+            kwargs.get(RETURN_FFNN_UP_PROJ_OUTPUT, False),
+            kwargs.get(RETURN_FFNN_GATE_OUTPUT, False)
         ))
         #
         if not fine_grained_output:
@@ -1021,6 +1021,10 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def __repr__(self):
         return repr(self._model)  # TODO fixme
 
+    @property
+    def device(self):
+        return self._model.device
+
     @classmethod
     def from_pretrained(
             cls,
@@ -1065,6 +1069,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         if lora_configs is not None:
             wrapper = prepare_model_for_kbit_training(wrapper)  # TODO fix gradient checkpointing issue
             wrapper = get_peft_model(wrapper, lora_configs)
+
+        wrapper.enable_wrapper()
 
         return wrapper
 
