@@ -29,6 +29,7 @@ def main(args: Namespace):
     model: CausalLMWrapper = model_type.from_pretrained(**configs['model'])
     logging.info("Model built")
     # Run evaluations
+    model.enable_wrapper()
     model.enable_benchmarking()
     tasks = configs['lm_eval'].pop('tasks')
     for exp_config in configs['exp']['params']:

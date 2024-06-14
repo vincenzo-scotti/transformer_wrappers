@@ -1070,8 +1070,6 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             wrapper = prepare_model_for_kbit_training(wrapper)  # TODO fix gradient checkpointing issue
             wrapper = get_peft_model(wrapper, lora_configs)
 
-        wrapper.enable_wrapper()
-
         return wrapper
 
     def save_pretrained(self, *args, **kwargs):
@@ -1576,7 +1574,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             return_dict: bool = True,
             **kwargs
     ):
-        base_model_output = base_model_output or self._benchmarking
+        base_model_output = base_model_output or self.is_benchmarking
         #
         if base_model_output:
             if hidden_states is not None:
@@ -1629,16 +1627,16 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
             return kwargs
 
-    def generate(self, *args, return_inner_states: bool = False, **kwargs):
-        return_inner_states = return_inner_states or self._benchmarking
+    def _validate_model_kwargs(self, *args, **kwargs):
+        return self.base_model._validate_model_kwargs(*args, **kwargs)
 
+    def generate(self, *args, return_inner_states: bool = False, **kwargs):
         if not self.is_wrapping:
             return self.base_model.generate(*args, **kwargs)
 
-        #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
-        if return_inner_states:
+        if return_inner_states or not self.is_benchmarking:
             #
             return self.forward(
                 input_ids=generate_output,
@@ -1657,13 +1655,10 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             return generate_output
 
     def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
-        # TODO fix Llama and Gemma generation issue
-        if not self.is_wrapping:
-            return self._model.prepare_inputs_for_generation(*args, **kwargs)
         #
-        inputs = self._model.prepare_inputs_for_generation(
-            *args, **kwargs
-        ) | {'base_model_output': base_model_output}
+        inputs = self._model.prepare_inputs_for_generation(*args, **kwargs)
+        if self.is_wrapping:
+            inputs |= {'base_model_output': base_model_output}
 
         return inputs
 
