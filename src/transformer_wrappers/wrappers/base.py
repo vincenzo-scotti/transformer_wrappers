@@ -1331,7 +1331,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
         # Positions
         if position_ids is not None:
             if isinstance(self._model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
-                position_ids = position_ids.unsqueeze(0)
+                pass
             elif isinstance(self._model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
