@@ -66,7 +66,7 @@ FFNN_OUTPUTS: str = 'feed_forward_outputs'
 ADD_ATTN_RESIDUAL: str = 'add_attn_residual'
 ADD_FFNN_RESIDUAL: str = 'add_ffnn_residual'
 
-RETURN_INTERMEDIATE_HIDDEN_STATES: str = 'return_intermediate_hidden_state'
+RETURN_INTERMEDIATE_HIDDEN_STATES: str = 'return_intermediate_hidden_states'
 RETURN_FFNN_UP_PROJ_OUTPUT: str = 'return_feed_forward_up_proj_output'
 RETURN_FFNN_GATE_OUTPUT: str = 'return_feed_forward_gate_output'
 RETURN_FFNN_INNER_ACTIVATIONS: str = 'return_feed_forward_inner_activations'

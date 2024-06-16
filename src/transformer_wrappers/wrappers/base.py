@@ -289,7 +289,6 @@ class AttentionWrapper(ModuleWrapper):
 
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
-    intermediate_hidden_state: str = CURR_INTERMEDIATE_HIDDEN_STATE
 
     def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
@@ -527,6 +526,8 @@ class LayerWrapper(ModuleWrapper):
     _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
     _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
 
+    intermediate_module_output: str = CURR_INTERMEDIATE_HIDDEN_STATE
+
     def __init__(self, layer: nn.Module, *args, **kwargs):
         super().__init__(layer, *args, **kwargs)
         # Attribute names
@@ -632,7 +633,7 @@ class LayerWrapper(ModuleWrapper):
         #
         output = kwargs | {
             CURR_HIDDEN_STATE: current_hidden_state,
-            INTERMEDIATE_HIDDEN_STATE: current_hidden_state,
+            self.intermediate_module_output: current_hidden_state,
             ADD_ATTN_RESIDUAL: add_attn_residual,
             self.attention_wrapper.module_output: attention_output
         }
@@ -686,6 +687,7 @@ class LayerWrapper(ModuleWrapper):
             **kwargs
     ):
         layer_output = kwargs.pop(self.module_output)
+        layer_intermediate_output = kwargs.pop(self.intermediate_module_output)
         attention_output = kwargs.pop(self.attention_wrapper.module_output)
         feed_forward_output = kwargs.pop(self.feed_forward_wrapper.module_output)
         if base_model_output:
@@ -708,7 +710,7 @@ class LayerWrapper(ModuleWrapper):
             if use_cache:
                 output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
             if return_intermediate_hidden_states:
-                output[CURR_INTERMEDIATE_HIDDEN_STATE] = attention_output[self.attention_wrapper.intermediate_hidden_state]
+                output[CURR_INTERMEDIATE_HIDDEN_STATE] = layer_intermediate_output
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_up_proj_output:
@@ -860,7 +862,7 @@ class LayersWrapper(ModuleWrapper):
         kwargs[CURR_HIDDEN_STATE] = layer_output[CURR_HIDDEN_STATE]
         # Intermediate hidden states
         if return_intermediate_hidden_states:
-            kwargs[INTERMEDIATE_HIDDEN_STATES].append(layer_output[INTERMEDIATE_HIDDEN_STATE])
+            kwargs[INTERMEDIATE_HIDDEN_STATES].append(layer_output[CURR_INTERMEDIATE_HIDDEN_STATE])
         # Hidden states
         if output_hidden_states:
             kwargs[HIDDEN_STATES].append(layer_output[CURR_HIDDEN_STATE])
@@ -1649,7 +1651,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
                 use_cache=True,
                 output_hidden_states=True,
                 return_attention_output=True,  # Self-attention layer output
-                return_feed_forward_output=True
+                return_feed_forward_output=True,
+                return_intermediate_hidden_states=True
             ) | {OUTPUT_IDS: generate_output}
         else:
             return generate_output
