@@ -67,7 +67,7 @@ class ParallelLayerWrapper(LayerWrapper):
         #
         output = kwargs | {
             CURR_HIDDEN_STATE: current_hidden_state,
-            INTERMEDIATE_HIDDEN_STATE: current_hidden_state,
+            self.intermediate_module_output: current_hidden_state,
             ADD_ATTN_RESIDUAL: add_attn_residual,
             COMPENSATE_AVG: compensate_avg,
             self.attention_wrapper.module_output: attention_output
@@ -163,6 +163,7 @@ class ParallelLayersWrapper(LayersWrapper):
             use_cache: bool = False,
             output_attentions: bool = False,  # Output attention weights
             output_hidden_states: bool = False,
+            return_intermediate_hidden_states: bool = False,
             return_attention_output: bool = False,  # Self-attention layer output
             return_feed_forward_up_proj_output: bool = False,
             return_feed_forward_gate_output: bool = False,
@@ -193,6 +194,9 @@ class ParallelLayersWrapper(LayersWrapper):
             kwargs[self.TMP_HIDDEN_STATE].append(layer_output.pop(CURR_HIDDEN_STATE))
             # Set Current hidden state as input of previous block
             kwargs[CURR_HIDDEN_STATE] = kwargs.pop(INPUT_HIDDEN_STATE)
+            # Intermediate hidden states
+            if return_intermediate_hidden_states:
+                kwargs[INTERMEDIATE_HIDDEN_STATES].append(layer_output[CURR_INTERMEDIATE_HIDDEN_STATE])
             # Attention weights
             if output_attentions and layer_output[CURR_ATTN_WEIGHTS] is not None:
                 kwargs[ATTN_WEIGHTS].append(layer_output[CURR_ATTN_WEIGHTS])
@@ -234,7 +238,11 @@ class ParallelLayersWrapper(LayersWrapper):
             USE_CACHE: use_cache,
             OUTPUT_ATTENTIONS: output_attentions,  # Output attention weights
             OUTPUT_HIDDEN_STATES: output_hidden_states,
+            RETURN_INTERMEDIATE_HIDDEN_STATES: return_intermediate_hidden_states,
             RETURN_ATTENTION_OUTPUT: return_attention_output,  # Self-attention layer output
+            RETURN_FFNN_UP_PROJ_OUTPUT: return_feed_forward_up_proj_output,
+            RETURN_FFNN_GATE_OUTPUT: return_feed_forward_gate_output,
+            RETURN_FFNN_INNER_ACTIVATIONS: return_feed_forward_inner_activations,
             RETURN_FFNN_OUTPUT: return_feed_forward_output
         }
         
