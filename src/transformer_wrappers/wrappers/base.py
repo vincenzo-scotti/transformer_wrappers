@@ -687,7 +687,7 @@ class LayerWrapper(ModuleWrapper):
             **kwargs
     ):
         layer_output = kwargs.pop(self.module_output)
-        layer_intermediate_output = kwargs.pop(self.intermediate_module_output)
+        layer_intermediate_output = kwargs.pop(self.intermediate_module_output, None)
         attention_output = kwargs.pop(self.attention_wrapper.module_output)
         feed_forward_output = kwargs.pop(self.feed_forward_wrapper.module_output)
         if base_model_output:
@@ -709,7 +709,7 @@ class LayerWrapper(ModuleWrapper):
                 output[CURR_ATTN_WEIGHTS] = attention_output[self.attention_wrapper.attention_weights]
             if use_cache:
                 output[CURR_KEY_VALUE] = attention_output[self.attention_wrapper.key_value]
-            if return_intermediate_hidden_states:
+            if return_intermediate_hidden_states and layer_intermediate_output is not None:
                 output[CURR_INTERMEDIATE_HIDDEN_STATE] = layer_intermediate_output
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
