@@ -1,5 +1,7 @@
 import re
 
+from joblib import Parallel, delayed, parallel_backend
+
 import torch
 
 from transformers import AutoTokenizer, PreTrainedTokenizer
@@ -141,7 +143,7 @@ class ResizableTokenizer(PreTrainedTokenizer):
     def prepare_for_tokenization(self, *args, **kwargs):
         return self.tokenizer.prepare_for_tokenization(*args, **kwargs)
 
-    def _split_token(self, token: str, vocabulary: Set[str]) -> List[str]:
+    def _split_token(self, token: str, vocabulary: Dict[str, int]) -> List[str]:
         if token in vocabulary:
             return [token]
 
@@ -161,15 +163,20 @@ class ResizableTokenizer(PreTrainedTokenizer):
         elif max_token_len < 0:
             raise ValueError()
 
-        vocabulary: Set[str] = set(self.get_vocab())
-        tokens = list()
+        vocabulary: Dict[str, int] = self.get_vocab()
+        # tokens = list()
 
         # TODO rewrite to be more efficient
-        for token in self.tokenizer.tokenize(*args, **kwargs):
-            if token in vocabulary:
-                tokens.append(token)
-            else:
-                tokens.extend(self._split_token(token, vocabulary))
+        # for token in self.tokenizer.tokenize(*args, **kwargs):
+        #     if token in vocabulary:
+        #         tokens.append(token)
+        #     else:
+        #         tokens.extend(self._split_token(token, vocabulary))
+        with parallel_backend('threading'):
+            tokens = Parallel()(
+                delayed(self._split_token)(token, vocabulary) for token in self.tokenizer.tokenize(*args, **kwargs)
+            )
+        tokens = [token for token_list in tokens for token in token_list]
 
         return tokens
 
