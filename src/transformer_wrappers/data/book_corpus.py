@@ -1,4 +1,4 @@
-from itertools import batched
+from itertools import batched, chain
 
 from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
@@ -29,8 +29,8 @@ class BookCorpus(Dataset):
         self.seed: Optional[int] = seed
 
         tmp_data = load_dataset('bookcorpus/bookcorpus', split='train')
-        train_idxs, test_idxs = train_test_split(range(len(tmp_data)), random_state=self.seed)
-        train_idxs, validation_idxs = train_test_split(train_idxs, random_state=self.seed)
+        train_idxs, test_idxs = train_test_split(range(len(tmp_data)), test_size=self.eval_size, random_state=self.seed)
+        train_idxs, validation_idxs = train_test_split(train_idxs, test_size=self.eval_size, random_state=self.seed)
 
         if self.split == 'train':
             idxs = train_idxs
@@ -41,14 +41,13 @@ class BookCorpus(Dataset):
         else:
             raise ValueError(f'Unknown split: `{self.split}`')
 
-        sep_symbol = self.tokenizer.eos_token
-        if self.tokenizer.bos_token is not None:
-            sep_symbol = sep_symbol + self.tokenizer.bos_token
-
         self.data: List[Dict[str, str]] = [
             {'text': tokenizer.decode(seq)}
             for seq in batched(
-                self.tokenizer(sep_symbol.join(tmp_data[idxs]['text']) + tokenizer.eos_token), self.max_seq_len
+                chain.from_iterable(
+                    tokenizer([sample + tokenizer.eos_token for sample in tmp_data[idxs]['text']])['input_ids']
+                ),
+                self.max_seq_len
             )
         ]
 

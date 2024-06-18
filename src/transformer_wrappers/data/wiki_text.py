@@ -1,3 +1,4 @@
+import re
 from itertools import batched
 
 from torch.utils.data import Dataset
@@ -32,7 +33,11 @@ class WikiText2(Dataset):
         self.data: List[Dict[str, str]] = [
             {'text': tokenizer.decode(seq)}
             for seq in batched(
-                self.tokenizer(sep_symbol.join(tmp_data['text']) + tokenizer.eos_token), self.max_seq_len
+                self.tokenizer(
+                    re.sub(r'\n = ([^=])', f'\n{sep_symbol} = \\1', '\n'.join(tmp_data['text']).lstrip('\n')) +
+                    tokenizer.eos_token
+                )['input_ids'],
+                self.max_seq_len
             )
         ]
 
