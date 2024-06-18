@@ -1703,10 +1703,12 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         self.metrics = MetricCollection(metrics)
 
     def prepare_input(self, text: Iterable[str]) -> BatchEncoding:
-        return self.tokenizer(text, return_tensors='pt', padding=True)
+        return self.tokenizer(text, return_tensors='pt', padding=True, add_special_tokens=False)
 
     def prepare_output(self, text: Iterable[str]) -> torch.Tensor:
-        output_ids, attention_mask = self.tokenizer(text, return_tensors='pt', padding=True).values()
+        output_ids, attention_mask = self.tokenizer(
+            text, return_tensors='pt', padding=True, add_special_tokens=False
+        ).values()
         output_ids[~attention_mask.bool()] = -100
 
         return output_ids
