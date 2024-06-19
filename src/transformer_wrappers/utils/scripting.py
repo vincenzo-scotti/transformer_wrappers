@@ -29,7 +29,7 @@ def init_training_environment(config_file_path: str) -> Dict:
     if not os.path.exists(experiment_series_dir_path):
         os.mkdir(experiment_series_dir_path)
     current_experiment_dir_path: str = os.path.join(
-        experiment_series_dir_path, f"{configs['experiment_id']}_{date_time}"
+        experiment_series_dir_path, f"{configs['experiment_id']}__{date_time}"
     )
     configs['current_experiment_dir_path'] = current_experiment_dir_path
     if not os.path.exists(current_experiment_dir_path):

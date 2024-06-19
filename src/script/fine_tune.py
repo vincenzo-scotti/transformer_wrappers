@@ -24,11 +24,10 @@ def main(args: Namespace):
     model: CausalLMWrapper = model_type(**configs['model'])
     logging.info("Model built")
     # Create data set splits
-    corpus_dtype: Type[Dataset] = corpus_mapping[configs['data']['corpus']]
     data_splits: Dict[str, Dataset] = {
-        split: corpus_dtype(
-            split, model.tokenizer, **configs['data'].get('params', dict())
-        ) for split in configs['data']['splits']
+        split: corpus_mapping[split_configs['corpus']](
+            split, model.tokenizer, **split_configs.get('params', dict())
+        ) for split, split_configs in configs['data'].items()
     }
     logging.info("Data set splits loaded")
     # Create callbacks
