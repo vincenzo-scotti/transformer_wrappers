@@ -41,11 +41,11 @@ class OpenAssistantGuanaco(Dataset):
             )
         ]
         for sample in self.data:
-            seq = tokenizer.apply_chat_template(sample['messages'])
-            seq.append(tokenizer.eos_token_id)
+            seq = self.tokenizer.apply_chat_template(sample['messages'])
+            seq.append(self.tokenizer.eos_token_id)
             if self.max_seq_len is not None:
                 seq = seq[:self.max_seq_len]
-            sample['text'] = tokenizer.decode(seq)
+            sample['text'] = self.tokenizer.decode(seq)
 
     def __len__(self) -> int:
         # Number of sequences within the data set
