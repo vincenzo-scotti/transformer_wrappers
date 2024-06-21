@@ -1,0 +1,60 @@
+# Main
+experiment_series: DEARING_2024  # <wrapper_dtype>
+experiment_id: mistral_7b_v0.3__parallel
+experiments_dir_path: ./experiments/
+hf_token: &hf_token hf_
+random_seed: 42
+log_file: true
+log_level: INFO
+# LM evaluation harness configs
+lm_eval:
+  tasks:
+    - hellaswag
+    - winogrande
+    - truthfulqa_mc1
+    - gsm8k
+    - arc_challenge
+    - mmlu
+  batch_size: 3
+  log_samples: true
+  random_seed: &random_seed 42
+  numpy_random_seed: *random_seed
+  torch_random_seed: *random_seed
+  fewshot_random_seed: *random_seed
+# Model
+model:
+  # Task
+  dtype: ParallelCausalLMWrapper  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
+  # Model
+  pretrained_model_name_or_path: mistralai/Mistral-7B-v0.3  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
+  # Model kwargs
+  model_kwargs:
+    device_map: cuda
+    token: *hf_token
+  # Quantization configs
+  quantization_configs:
+    load_in_4bit: true
+    bnb_4bit_use_double_quant: true
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_compute_dtype: bfloat16
+  # Tokenizer kwargs
+  tokenizer_kwargs:
+    token: *hf_token
+    pad_token: </s>
+# Experimental configs
+exp:
+  params:
+    p_rate:
+      - 2
+      - 4
+    block_parallel:
+      - true
+      - false
+    iterative:
+      - true
+      - false
+    scaling:
+      - true
+      - false
+  # param_groups: []
+  overwrite: false  # Whether to repeat experiments with results that already exist
