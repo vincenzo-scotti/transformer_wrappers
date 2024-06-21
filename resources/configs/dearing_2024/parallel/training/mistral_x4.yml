@@ -1,0 +1,95 @@
+# Main
+experiment_series: DEARING_2024  # <wrapper_dtype>_<data_set>
+experiment_id: mistral_7b_v0.3__parallel_x4__fine_tuning
+experiments_dir_path: ./experiments/
+hf_token: &hf_token hf_
+random_seed: 42
+log_file: true
+log_level: INFO
+# Data
+data:
+  train:
+    corpus: OpenWebText  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
+    params: &params
+      max_seq_len: 1024
+      # path: ./resources/data/raw/<data_path>  # ...
+  validation:
+    corpus: &eval_corpus WikiText2  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
+    params: *params
+  test:
+    corpus: *eval_corpus
+    params: *params
+# Callbacks
+callbacks:
+  early_stopping:
+    monitor: &estop_monitor Loss/Validation
+    mode: &estop_mode min
+    patience: 5  # Early stopping patience
+    min_delta: 1.e-3  # Minimum metric variation
+    verbose: true
+  checkpoint_callback:
+    monitor: *estop_monitor
+    mode: *estop_mode
+    # save_top_k: 1
+# Model
+model:
+  # Task
+  dtype: ParallelCausalLMWrapper  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
+  # Model
+  pretrained_model_name_or_path: mistralai/Mistral-7B-v0.3  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
+  # Model kwargs
+  model_kwargs:
+    device_map: cuda  # torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    token: *hf_token
+  # Quantization configs
+  quantization_configs:
+    load_in_4bit: true
+    bnb_4bit_use_double_quant: true
+    bnb_4bit_quant_type: nf4
+    bnb_4bit_compute_dtype: bfloat16
+  # LoRA configs
+  lora_config:
+    target_modules: all-linear
+    lora_alpha: 16
+    lora_dropout: 0.1
+    r: 16
+    bias: none
+    task_type: CAUSAL_LM
+  # Gradient checkpointing
+  gradient_checkpointing: true
+  # Tokenizer kwargs
+  tokenizer_kwargs:
+    token: *hf_token
+    pad_token: </s>
+  # Wrapper specific parameters
+  ## Parallel
+  p_rate: 4
+  block_parallel: true
+  iterative: true
+  scaling: false
+# Model hyperparameters
+hyperparameters:
+  # Optimiser
+  optimiser_params:
+    dtype: PagedAdamW  # AdamW | RMSprop | PagedAdamW
+    lr: 6.25e-5  # Learning rate
+    # scale_parameter: false  # Used by AdaFactor
+    # relative_step: false  # Used by AdaFactor
+  # Trainer
+  trainer_params:
+    accumulate_grad_batches: 1
+    precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
+    gradient_clip_val: 1.0  # Gradient clipping
+    max_epochs: 1  # Number of training epochs
+    val_check_interval: 2048
+  # Data loader
+  data_loader_params:
+    train:
+      batch_size: 1
+      num_workers: &workers 4
+    validation:
+      batch_size: &eval_bs 1
+      num_workers: *workers
+    test:
+      batch_size: *eval_bs
+      num_workers: *workers
