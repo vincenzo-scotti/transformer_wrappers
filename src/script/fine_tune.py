@@ -21,14 +21,19 @@ def main(args: Namespace):
     logging.info("Script started and configuration file loaded")
     # Build model
     model_type: Type[CausalLMWrapper] = causal_lm_mapping[configs['model'].pop('dtype')]
-    model: CausalLMWrapper = model_type(**configs['model'])
+    model: CausalLMWrapper = model_type.from_pretrained(**configs['model'])
     logging.info("Model built")
     # Create data set splits
-    data_splits: Dict[str, Dataset] = {
-        split: corpus_mapping[split_configs['corpus']](
+    # data_splits: Dict[str, Dataset] = {
+    #     split: corpus_mapping[split_configs['corpus']](
+    #         split, model.tokenizer, **split_configs.get('params', dict())
+    #     ) for split, split_configs in configs['data'].items()
+    # }
+    data_splits = dict()
+    for split, split_configs in configs['data'].items():
+        data_splits[split] = corpus_mapping[split_configs['corpus']](
             split, model.tokenizer, **split_configs.get('params', dict())
-        ) for split, split_configs in configs['data'].items()
-    }
+        )
     logging.info("Data set splits loaded")
     # Create callbacks
     callbacks = {
@@ -49,7 +54,7 @@ def main(args: Namespace):
     logging.info("Loggers instantiated")
     # Fit and evaluate model
     model.set_fine_tuning_params(**configs['hyperparameters'])
-    model.fit_eval(
+    model.fine_tune(
         data_splits, dir_path=configs['current_experiment_dir_path'], callbacks=callbacks, loggers=loggers
     )
     # Close script info

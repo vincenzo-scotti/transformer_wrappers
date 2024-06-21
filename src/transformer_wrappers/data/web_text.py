@@ -22,6 +22,8 @@ class OpenWebText(Dataset):
         self.max_seq_len: Optional[int] = max_seq_len
 
         self.data = load_dataset('Skylion007/openwebtext', streaming=True, split=self.split)
+        if self.split == 'train':
+            self.data = self.data.shuffle()
 
     def __len__(self) -> int:
         # Number of sequences within the data set

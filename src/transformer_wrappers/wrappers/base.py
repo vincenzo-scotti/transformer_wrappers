@@ -27,7 +27,7 @@ from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutput
 from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa, _prepare_4d_causal_attention_mask
 )
-from transformers import logging
+from transformers import logging as hf_logging
 
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, AutoPeftModel, AutoPeftModelForCausalLM
@@ -62,7 +62,7 @@ __all__ = [
 ]
 
 
-logger = logging.get_logger(__name__)
+logger = hf_logging.get_logger(__name__)
 
 
 SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
@@ -1759,7 +1759,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         labels = labels[..., 1:].contiguous()
 
         # Log Perplexity
-        for metric_id, metric in self.metrics.values():
+        for metric_id, metric in self.metrics.items():
             if metric_id == 'Perplexity':
                 metric.update(logits, labels)
             else:
@@ -1775,8 +1775,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         return self._eval_step('Test', mini_batch, mini_batch_idx)
 
     def _evaluation_epoch_start(self):
-        if self._metrics is not None:
-            for metric in self._metrics.values():
+        if self.metrics is not None:
+            for metric in self.metrics.values():
                 metric.reset()
 
     def on_validation_epoch_start(self):
@@ -1786,8 +1786,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         return self._evaluation_epoch_start()
 
     def _evaluation_epoch_end(self, split: str):
-        if self._metrics is not None:
-            for metric_id, metric in self._metrics.items():
+        if self.metrics is not None:
+            for metric_id, metric in self.metrics.items():
                 self.log(f'{metric_id}/{split}', metric.compute())
 
     def on_validation_epoch_end(self):
@@ -1796,7 +1796,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     def on_test_epoch_end(self):
         return self._evaluation_epoch_end('Test')
 
-    def fit_eval(
+    def fine_tune(
             self,
             data_splits: Dict[str, Dataset],
             *_,
@@ -1806,7 +1806,12 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     ) -> 'CausalLMWrapper':
         # Create data loaders
         data_loaders: Dict[str, DataLoader] = {
-            split: DataLoader(data, collate_fn=self.collate, shuffle=split == 'train', **self.data_loader_params[split])
+            split: DataLoader(
+                data,
+                collate_fn=self.collate,
+                shuffle=split == 'train' and len(data) < 10000,  # TODO find better solution to shuffling large data sets
+                **self.data_loader_params[split]
+            )
             for split, data in data_splits.items()
         }
         logging.info("Data loaders instantiated")
