@@ -11,20 +11,21 @@ data:
   train:
     corpus: OpenWebText  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
     params: &params
-      max_seq_len: 1024
+      max_seq_len: 768
       # path: ./resources/data/raw/<data_path>  # ...
   validation:
     corpus: &eval_corpus WikiText2  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
-    params: *params
+    params: &eval_params
+      max_seq_len: 1024
   test:
     corpus: *eval_corpus
-    params: *params
+    params: *eval_params
 # Callbacks
 callbacks:
   early_stopping:
     monitor: &estop_monitor Loss/Validation
     mode: &estop_mode min
-    patience: 5  # Early stopping patience
+    patience: 3  # Early stopping patience
     min_delta: 1.e-3  # Minimum metric variation
     verbose: true
   checkpoint_callback:
@@ -72,23 +73,23 @@ hyperparameters:
   # Optimiser
   optimiser_params:
     dtype: PagedAdamW  # AdamW | RMSprop | PagedAdamW
-    lr: 6.25e-5  # Learning rate
+    lr: 1.0e-5  # Learning rate
     # scale_parameter: false  # Used by AdaFactor
     # relative_step: false  # Used by AdaFactor
   # Trainer
   trainer_params:
-    accumulate_grad_batches: 1
+    accumulate_grad_batches: 16
     precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
     gradient_clip_val: 1.0  # Gradient clipping
     max_epochs: 1  # Number of training epochs
-    val_check_interval: 2048
+    val_check_interval: 4096
   # Data loader
   data_loader_params:
     train:
       batch_size: 1
       num_workers: &workers 4
     validation:
-      batch_size: &eval_bs 1
+      batch_size: &eval_bs 2
       num_workers: *workers
     test:
       batch_size: *eval_bs

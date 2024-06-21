@@ -32,8 +32,9 @@ class OpenWebText(Dataset):
     def __getitem__(self, index: int) -> Dict:
         return {'text': self.tokenizer.decode(
             self.tokenizer(
-                next(iter(self.data.filter(lambda sample, idx: idx == index, with_indices=True)))['text'] +
-                self.tokenizer.eos_token,
+                (next(iter(self.data.filter(lambda sample, idx: idx == index, with_indices=True)))['text'] +
+                # self.tokenizer.eos_token,
+                self.tokenizer.eos_token)[:self.max_seq_len * 10],
                 truncation=True,
                 max_length=self.max_seq_len
             )['input_ids']
