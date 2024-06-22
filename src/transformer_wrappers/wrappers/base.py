@@ -737,6 +737,21 @@ class LayerWrapper(ModuleWrapper):
 
             return kwargs
 
+    def forward(self, *args, base_model_output: bool = False, **kwargs):
+        # Pre-process input
+        kwargs = self._pre_process_input(*args, **kwargs)
+        # Apply layer transformation
+        if self.super_wrapper.super_wrapper.gradient_checkpointing and self.training:
+            output = self.super_wrapper.super_wrapper._gradient_checkpointing_func(
+                self._wrapped_forward, use_reentrant=False, **kwargs
+            )
+        else:
+            output = self._wrapped_forward(**kwargs)
+        # Post-process output
+        output = self._post_process_output(base_model_output=base_model_output, **output)
+
+        return output
+
 
 class LayersWrapper(ModuleWrapper):
     _module_name: str = 'layer modules'
@@ -1007,6 +1022,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     # _supports_flash_attn_2 = True
     # _supports_sdpa = True
 
+    supports_gradient_checkpointing = True
+
     def __init__(
             self,
             model: PreTrainedModel,
@@ -1060,8 +1077,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         model = auto_model_dtype.from_pretrained(
                 pretrained_model_name_or_path, *model_args, **model_kwargs,
             )
-        if gradient_checkpointing:
-            model.gradient_checkpointing_enable()
+        # if gradient_checkpointing:
+        #     model.gradient_checkpointing_enable()
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
         )
@@ -1071,6 +1088,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         if lora_configs is not None:
             wrapper = prepare_model_for_kbit_training(wrapper)  # TODO fix gradient checkpointing issue
             wrapper = get_peft_model(wrapper, lora_configs)
+
+        if gradient_checkpointing:
+            wrapper.gradient_checkpointing_enable()
 
         return wrapper
 
@@ -1107,17 +1127,39 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     @property
     def gradient_checkpointing(self):
-        if isinstance(self._model, PeftModel):
-            return self._model.base_model.model.gradient_checkpointing
-        else:
-            return self._model.gradient_checkpointing
+        return self.is_gradient_checkpointing
 
-    @property
+    @property  # HF property
     def is_gradient_checkpointing(self):
         if isinstance(self._model, PeftModel):
             return self._model.base_model.model.is_gradient_checkpointing
         else:
             return self._model.is_gradient_checkpointing
+
+    def gradient_checkpointing_enable(self, *args, **kwargs):
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model.gradient_checkpointing_enable(*args, **kwargs)
+        else:
+            return self._model.gradient_checkpointing_enable(*args, **kwargs)
+
+    def _set_gradient_checkpointing(self, *args, **kwargs):
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model._set_gradient_checkpointing(*args, **kwargs)
+        else:
+            return self._model._set_gradient_checkpointing(*args, **kwargs)
+
+    def gradient_checkpointing_disable(self):
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model.gradient_checkpointing_disable()
+        else:
+            return self._model.gradient_checkpointing_disable()
+
+    @property
+    def _gradient_checkpointing_func(self):
+        if isinstance(self._model, PeftModel):
+            return self._model.base_model.model._gradient_checkpointing_func
+        else:
+            return self._model._gradient_checkpointing_func
 
     def eval(self):
         self._model = self._model.eval()
@@ -1308,12 +1350,13 @@ class TransformerWrapper(PreTrainedModelWrapper):
             raise ValueError('One between `input_ids` or `inputs_embeds` must be specified.')
         # Cache
         if past_key_values is None:
-            if isinstance(self._model, GPT2PreTrainedModel):
-                past_key_values = [None] * self.config.num_hidden_layers
-            elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
-                past_key_values = DynamicCache.from_legacy_cache(past_key_values)
-            else:
-                raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
+            if use_cache:
+                if isinstance(self._model, GPT2PreTrainedModel):
+                    past_key_values = [None] * self.config.num_hidden_layers
+                elif isinstance(self._model, SHARED_STRUCTURE_MODELS):
+                    past_key_values = DynamicCache.from_legacy_cache(past_key_values)
+                else:
+                    raise NotImplementedError(f'Unsupported model type: `{type(self._model)}`.')
             prefix_length = 0
         else:
             if isinstance(self._model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
@@ -1545,9 +1588,6 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     @property
     def lm_head_wrapper(self):
         return self._lm_head_wrapper
-    
-    def gradient_checkpointing_enable(self, gradient_checkpointing_kwargs=None):
-        super().gradient_checkpointing_enable()
 
     def _wrapped_forward(self, **kwargs):
         #
