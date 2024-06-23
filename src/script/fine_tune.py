@@ -22,6 +22,8 @@ def main(args: Namespace):
     # Build model
     model_type: Type[CausalLMWrapper] = causal_lm_mapping[configs['model'].pop('dtype')]
     model: CausalLMWrapper = model_type.from_pretrained(**configs['model'])
+    model.enable_wrapper()
+    model.train()
     logging.info("Model built")
     # Create data set splits
     # data_splits: Dict[str, Dataset] = {

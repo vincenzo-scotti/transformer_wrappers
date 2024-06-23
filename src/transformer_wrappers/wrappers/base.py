@@ -1815,6 +1815,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         return self._eval_step('Test', mini_batch, mini_batch_idx)
 
     def _evaluation_epoch_start(self):
+        self.eval()  # TODO find better solution
         if self.metrics is not None:
             for metric in self.metrics.values():
                 metric.reset()
@@ -1829,6 +1830,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         if self.metrics is not None:
             for metric_id, metric in self.metrics.items():
                 self.log(f'{metric_id}/{split}', metric.compute())
+        self.train()  # TODO find better solution
 
     def on_validation_epoch_end(self):
         return self._evaluation_epoch_end('Validation')
