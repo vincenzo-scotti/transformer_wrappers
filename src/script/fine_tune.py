@@ -2,8 +2,6 @@ import sys
 from argparse import ArgumentParser, Namespace
 import logging
 
-from torch.utils.data import Dataset
-
 from lightning.pytorch import callbacks as pl_callbacks
 from lightning.pytorch import loggers as pl_loggers
 
@@ -22,8 +20,6 @@ def main(args: Namespace):
     # Build model
     model_type: Type[CausalLMWrapper] = causal_lm_mapping[configs['model'].pop('dtype')]
     model: CausalLMWrapper = model_type.from_pretrained(**configs['model'])
-    model.enable_wrapper()
-    model.train()
     logging.info("Model built")
     # Create data set splits
     # data_splits: Dict[str, Dataset] = {
@@ -59,6 +55,9 @@ def main(args: Namespace):
     model.fine_tune(
         data_splits, dir_path=configs['current_experiment_dir_path'], callbacks=callbacks, loggers=loggers
     )
+    # Save model
+    model.save_pretrained(configs['current_model_dir_path'])
+    logging.info(f"Model saved at `{configs['current_model_dir_path']}`")
     # Close script info
     logging.info("Script executed successfully")
 

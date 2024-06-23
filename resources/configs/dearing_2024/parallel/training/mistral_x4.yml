@@ -2,6 +2,7 @@
 experiment_series: DEARING_2024  # <wrapper_dtype>_<data_set>
 experiment_id: mistral_7b_v0.3__parallel_x4__fine_tuning
 experiments_dir_path: ./experiments/
+models_dir_path: ./resources/models/
 hf_token: &hf_token hf_
 random_seed: 42
 log_file: true

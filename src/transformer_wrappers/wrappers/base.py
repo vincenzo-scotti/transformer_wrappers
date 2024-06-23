@@ -1099,7 +1099,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         is_wrapping = self.is_wrapping
         if is_wrapping:
             self.disable_wrapper()
-        self.base_model.save_pretrained(*args, **kwargs)
+        self._model.save_pretrained(*args, **kwargs)
         if is_wrapping:
             self.enable_wrapper()
 
@@ -1870,6 +1870,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         )
         logging.info("Trainer instantiated")
         # Train neural network
+        self.enable_wrapper()
+        self.train()
         start_time = datetime.now()
         logging.info("Training started")
         trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])

@@ -25,6 +25,9 @@ def init_training_environment(config_file_path: str) -> Dict:
     experiments_dir_path: str = configs['experiments_dir_path']
     if not os.path.exists(experiments_dir_path):
         os.mkdir(experiments_dir_path)
+    models_dir_path: str = configs['models_dir_path']
+    if not os.path.exists(models_dir_path):
+        os.mkdir(models_dir_path)
     experiment_series_dir_path: str = os.path.join(experiments_dir_path, configs['experiment_series'])
     if not os.path.exists(experiment_series_dir_path):
         os.mkdir(experiment_series_dir_path)
@@ -34,6 +37,12 @@ def init_training_environment(config_file_path: str) -> Dict:
     configs['current_experiment_dir_path'] = current_experiment_dir_path
     if not os.path.exists(current_experiment_dir_path):
         os.mkdir(current_experiment_dir_path)
+    current_model_dir_path: str = os.path.join(
+        models_dir_path, f"{configs['experiment_id']}__{date_time}"
+    )
+    configs['current_model_dir_path'] = current_model_dir_path
+    if not os.path.exists(current_model_dir_path):
+        os.mkdir(current_model_dir_path)
     # Set random seed
     L.seed_everything(configs.get('random_seed'), workers=True)
     # Dump configs
