@@ -12,11 +12,12 @@ data:
     corpus: OpenWebText  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
     params: &params
       max_seq_len: 768
+      n_docs: 16384
       # path: ./resources/data/raw/<data_path>  # ...
   validation:
     corpus: &eval_corpus WikiText2  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
     params: &eval_params
-      max_seq_len: 1024
+      max_seq_len: 1536
   test:
     corpus: *eval_corpus
     params: *eval_params
@@ -78,11 +79,12 @@ hyperparameters:
     # relative_step: false  # Used by AdaFactor
   # Trainer
   trainer_params:
-    accumulate_grad_batches: 16
+    accumulate_grad_batches: 32
     precision: bf16  # Mixed precision (bf16-mixed or 16-mixed)
     gradient_clip_val: 1.0  # Gradient clipping
+    # max_steps: 512  # Number of update steps
     max_epochs: 1  # Number of training epochs
-    val_check_interval: 4096
+    val_check_interval: 4096  # Number of seen batches (not update steps)
   # Data loader
   data_loader_params:
     train:
