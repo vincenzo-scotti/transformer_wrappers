@@ -12,13 +12,13 @@ data:
   train:
     corpus: OpenWebText  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
     params: &params
-      max_seq_len: 768
+      max_seq_len: 1024
       n_docs: 16384
       # path: ./resources/data/raw/<data_path>  # ...
   validation:
     corpus: &eval_corpus WikiText2  # OpenAssistantGuanaco | OpenWebText | WikiText2 | WikiText103
     params: &eval_params
-      max_seq_len: 1536
+      max_seq_len: 1024
   test:
     corpus: *eval_corpus
     params: *eval_params
@@ -51,7 +51,7 @@ model:
     bnb_4bit_quant_type: nf4
     bnb_4bit_compute_dtype: bfloat16
   # LoRA configs
-  lora_config:
+  lora_configs:
     target_modules: all-linear
     lora_alpha: 16
     lora_dropout: 0.1
@@ -75,7 +75,7 @@ hyperparameters:
   # Optimiser
   optimiser_params:
     dtype: PagedAdamW  # AdamW | RMSprop | PagedAdamW
-    lr: 1.0e-5  # Learning rate
+    lr: 5.0e-5  # Learning rate
     # scale_parameter: false  # Used by AdaFactor
     # relative_step: false  # Used by AdaFactor
   # Trainer

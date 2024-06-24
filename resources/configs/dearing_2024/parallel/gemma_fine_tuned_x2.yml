@@ -1,6 +1,6 @@
 # Main
 experiment_series: DEARING_2024  # <wrapper_dtype>
-experiment_id: mistral_7b_v0.3__parallel__fine_tuned__x2
+experiment_id: gemma_7b__parallel
 experiments_dir_path: ./experiments/
 hf_token: &hf_token hf_
 random_seed: 42
@@ -26,7 +26,7 @@ model:
   # Task
   dtype: ParallelCausalLMWrapper  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
   # Model
-  pretrained_model_name_or_path: ./resources/models/mistral_7b_v0.3__parallel_x2__fine_tuning__  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
+  pretrained_model_name_or_path: google/gemma-7b  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
   # Model kwargs
   model_kwargs:
     device_map: cuda
@@ -40,11 +40,10 @@ model:
   # PEFT model
   peft: true
   # Tokenizer
-  tokenizer_name_or_path: mistralai/Mistral-7B-v0.3
+  tokenizer_name_or_path: google/gemma-7b
   # Tokenizer kwargs
   tokenizer_kwargs:
     token: *hf_token
-    pad_token: </s>
   # Wrapper specific parameters
   ## Parallel
   p_rate: 2
