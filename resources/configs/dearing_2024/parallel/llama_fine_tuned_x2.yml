@@ -26,7 +26,7 @@ model:
   # Task
   dtype: ParallelCausalLMWrapper  # CausalLMWrapper | ParallelCausalLMWrapper | ResizableCausalLMWrapper
   # Model
-  pretrained_model_name_or_path: ./resources/models/llama_3_8b__parallel_x2__fine_tuning__  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
+  pretrained_model_name_or_path: ./resources/models/llama_3_8b__parallel_x2__fine_tuning__2024_06_25_06_32_30  # mistralai/Mistral-7B-v0.3 | google/gemma-7b | meta-llama/Meta-Llama-3-8B
   # Model kwargs
   model_kwargs:
     device_map: cuda
@@ -40,7 +40,7 @@ model:
   # PEFT model
   peft: true
   # Tokenizer
-  tokenizer_name_or_path: mistralai/Mistral-7B-v0.3
+  tokenizer_name_or_path: meta-llama/Meta-Llama-3-8B
   # Tokenizer kwargs
   tokenizer_kwargs:
     token: *hf_token
