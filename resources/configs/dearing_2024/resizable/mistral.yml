@@ -12,7 +12,7 @@ lm_eval:
     - hellaswag
     - winogrande
     - truthfulqa_mc1
-    - gsm8k
+    # - gsm8k
     - arc_challenge
     - mmlu
   batch_size: 1
