@@ -24,9 +24,12 @@ class ParameterCausalLMWrapper(CausalLMWrapper):
             self._gen_parameters = self._gen_parameters.union(set(parameters))
             new_parameters = self._original_parameters + [
                 Parameter(param, Parameter.KEYWORD_ONLY, default=None) for param in self._gen_parameters]
-            self.base_model.forward.__signature__ = signature(
-                self.base_model.forward).replace(
-                parameters=new_parameters)
+
+            def parameter_forward(**new_parameters):
+                self.base_model.forward(new_parameters)
+
+            self.base_model.forward = parameter_forward
+            self.base_model.forward.__signature__ = signature(self.base_model.forward).replace(parameters=new_parameters)
 
     def remove_parameters(self, parameters: List[str] = None):
         if parameters:

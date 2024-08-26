@@ -140,7 +140,7 @@ class InjectLayersWrapper(LayersWrapper):
     _layer_dtype: Type[ModuleWrapper] = InjectLayerWrapper
 
     def _wrapped_forward(self, **kwargs):
-        injections = kwargs[InjectCausalLMWrapper.INJECTS_PARAMETER]
+        injections = kwargs[InjectCausalLMWrapper.INJECTS_PARAMETER] if InjectCausalLMWrapper.INJECTS_PARAMETER in kwargs else []
         position_ids = kwargs[POSITION_IDS].squeeze()
         output = self._init_state(**kwargs)
         # Iterate over layers
