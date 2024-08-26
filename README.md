@@ -1,7 +1,8 @@
 # Transformer Wrappers
 
-Codebase for the project.
-TODO add project description and link to Overleaf/paper
+Codebase for the project Transformer Wrappers project.
+This project aims at providing wrappers to expose a uniform and extensible interface of transformer models while maintaining also uniform and extensible internal structure.
+The wrappers are thought to be used with the main models of the [Transformers](https://huggingface.co/docs/transformers/index) library.
 
 ## Repository structure
 
