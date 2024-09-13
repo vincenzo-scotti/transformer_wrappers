@@ -7,6 +7,7 @@ import torch
 from .base import TransformerWrapper
 from .base import LayerWrapper, LayersWrapper, ModuleWrapper
 from .parameter import ParameterCausalLMWrapper
+from .ablation import AblationCausalLMWrapper, AblationTransformerWrapper, AblationLayersWrapper, AblationLayerWrapper, AblationPosition
 from .constants import * # pylint:disable=W0401,W0614
 
 
@@ -140,23 +141,29 @@ class InjectLayersWrapper(LayersWrapper):
     _layer_dtype: Type[ModuleWrapper] = InjectLayerWrapper
 
     def _wrapped_forward(self, **kwargs):
-        injections = kwargs[InjectCausalLMWrapper.INJECTS_PARAMETER] if InjectCausalLMWrapper.INJECTS_PARAMETER in kwargs else []
-        position_ids = kwargs[POSITION_IDS].squeeze()
         output = self._init_state(**kwargs)
         # Iterate over layers
         for layer_idx, layer_wrapper in enumerate(self.get_layer_wrappers_iterator()):
             # Apply layer transformation
-            if injections and (
-                    inj_candidates := [i for i in injections if i.layer == layer_idx and i.token in position_ids]):
-                for inj in inj_candidates:
-                    inj.index = (position_ids == inj.token).nonzero(as_tuple=True)[0]
-                output = layer_wrapper.forward(layer_idx=layer_idx, inj_cand=inj_candidates, **output)
-            else:
-                output = layer_wrapper.forward(layer_idx=layer_idx, **output)
+            output = self._injections_candiate_gen(layer_idx=layer_idx, **output)
+            output = layer_wrapper.forward(layer_idx=layer_idx, **output)
             # Update model state
             output = self._update_state(**output)
 
         return output
+
+    def _injections_candiate_gen(self, layer_idx, **kwargs):
+        injections = kwargs[InjectCausalLMWrapper.INJECTS_PARAMETER] if InjectCausalLMWrapper.INJECTS_PARAMETER in kwargs else []
+        position_ids = kwargs[POSITION_IDS].squeeze()
+        if injections and (
+            inj_candidates := [
+                i for i in injections if i.layer == layer_idx and i.token in position_ids
+            ]
+        ):
+            for inj in inj_candidates:
+                inj.index = (position_ids == inj.token).nonzero(as_tuple=True)[0]
+            kwargs |= {InjectLayerWrapper.INJECT_CANDIDATES: inj_candidates}
+        return kwargs
 
 
 class InjectTransformerWrapper(TransformerWrapper):
@@ -180,3 +187,82 @@ class InjectCausalLMWrapper(ParameterCausalLMWrapper):
 def _inject(hidden_states: torch.FloatTensor, inject_embedding: torch.FloatTensor, inject_position: int):
     hidden_states[0, inject_position, :] = inject_embedding
     return hidden_states
+
+
+
+
+class AblInjLayerWrapper(InjectLayerWrapper, AblationLayerWrapper):
+
+    def _wrapped_forward_ablinj(
+        self,
+        abl_cand = [],
+        skip_attention: bool = False,
+        skip_ffnn: bool = False,
+        **kwargs
+    ):
+        # TODO: Find a better solution
+        output = kwargs
+        if AblationPosition.ATTENTION in [c.position for c in abl_cand]:
+            output[self.attention_wrapper.module_output] = {
+                self.attention_wrapper.module_output: None,
+                self.attention_wrapper.attention_weights: None,
+                self.attention_wrapper.key_value: None
+            }
+            output[self.intermediate_module_output] = output[CURR_HIDDEN_STATE]
+            output["past_key_values"].update(
+                output["past_key_values"][-1][0],
+                output["past_key_values"][-1][1],
+                output["layer_idx"]
+            )
+        else:
+            output = self._attn_forward_inject(**output)
+        if AblationPosition.FFNN in [c.position for c in abl_cand]:
+            output[self.feed_forward_wrapper.module_output] = {
+                self.feed_forward_wrapper.module_output: None
+            }
+        else:
+            output = self._ffnn_forward_inject(**output)
+        #
+        output |= {self.module_output: output[CURR_HIDDEN_STATE]}
+        
+        return output
+
+    def _wrapped_forward(self, **kwargs): # pylint:disable=W0221
+        # TODO: Find a better solution
+        if InjectLayerWrapper.INJECT_CANDIDATES in kwargs and AblationLayerWrapper.ABLATION_CANDIDATES in kwargs:
+            return self._wrapped_forward_ablinj(**kwargs)
+        elif AblationLayerWrapper.ABLATION_CANDIDATES in kwargs:
+            return AblationLayerWrapper._wrapped_forward(self, **kwargs)
+        elif InjectLayerWrapper.INJECT_CANDIDATES in kwargs:
+            return InjectLayerWrapper._wrapped_forward(self, **kwargs)
+        else:
+            return LayerWrapper._wrapped_forward(self, **kwargs)
+
+class AblInjLayersWrapper(InjectLayersWrapper, AblationLayersWrapper):
+    _layer_dtype: Type[ModuleWrapper] = AblInjLayerWrapper
+
+    def _wrapped_forward(self, **kwargs):
+        output = self._init_state(**kwargs)
+        # Iterate over layers
+        for layer_idx, layer_wrapper in enumerate(self.get_layer_wrappers_iterator()):
+            # Apply layer transformation
+            output = self._injections_candiate_gen(layer_idx=layer_idx, **output)
+            output = self._ablation_candiate_gen(layer_idx=layer_idx, **output)
+            output = layer_wrapper.forward(layer_idx=layer_idx, **output)
+            # Update model state
+            output = self._update_state(**output)
+
+        return output
+
+class AblInjTransformerWrapper(InjectTransformerWrapper, AblationTransformerWrapper):
+    _layers_dtype: Type[TransformerWrapper] = AblInjLayersWrapper
+
+class AblInjCausalLMWrapper(InjectCausalLMWrapper, AblationCausalLMWrapper):
+    _transformer_dtype: Type[TransformerWrapper] = AblInjTransformerWrapper
+
+    def __init__(self, *args, **kwargs):
+        ParameterCausalLMWrapper.__init__(self, *args, **kwargs)
+        self.add_parameters([InjectCausalLMWrapper.INJECTS_PARAMETER, AblationCausalLMWrapper.ABLATIONS_PARAMETER])
+
+    def generate(self, *args, return_inner_states: bool = False, **kwargs):
+        return AblationCausalLMWrapper.generate(self, *args, **kwargs)
