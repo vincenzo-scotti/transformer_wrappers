@@ -203,23 +203,18 @@ class AblInjLayerWrapper(InjectLayerWrapper, AblationLayerWrapper):
         # TODO: Find a better solution
         output = kwargs
         if AblationPosition.ATTENTION in [c.position for c in abl_cand]:
-            output[self.attention_wrapper.module_output] = {
-                self.attention_wrapper.module_output: None,
-                self.attention_wrapper.attention_weights: None,
-                self.attention_wrapper.key_value: None
-            }
-            output[self.intermediate_module_output] = output[CURR_HIDDEN_STATE]
-            output["past_key_values"].update(
-                output["past_key_values"][-1][0],
-                output["past_key_values"][-1][1],
-                output["layer_idx"]
-            )
+            residual_without_attention = output[CURR_HIDDEN_STATE]
+            output = self._attn_forward_inject(**output)
+
+            output[self.intermediate_module_output] = residual_without_attention
+            output[CURR_HIDDEN_STATE] = residual_without_attention
+            
         else:
             output = self._attn_forward_inject(**output)
         if AblationPosition.FFNN in [c.position for c in abl_cand]:
-            output[self.feed_forward_wrapper.module_output] = {
-                self.feed_forward_wrapper.module_output: None
-            }
+            current_output = output[CURR_HIDDEN_STATE]
+            output = self._ffnn_forward_inject(**output)
+            output[CURR_HIDDEN_STATE] = current_output
         else:
             output = self._ffnn_forward_inject(**output)
         #
