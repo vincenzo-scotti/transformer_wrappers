@@ -1,4 +1,4 @@
-from typing import Type, Optional
+from typing import Type, Optional, List, Dict
 from enum import Enum
 from dataclasses import dataclass
 
@@ -183,6 +183,18 @@ class InjectCausalLMWrapper(ParameterCausalLMWrapper):
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
         return ParameterCausalLMWrapper.generate(self, *args, **kwargs)
 
+    def prepare_injections(self, injections: List[Dict], layer_offset: bool = True):
+        layer_offset = 1 if layer_offset else 0
+        return [
+            InjectInfo(
+                **inj | {
+                    # Add layer visualization offset
+                    "layer": inj["layer"] - layer_offset,
+                }
+            )
+            for inj in injections
+        ]
+
 
 def _inject(hidden_states: torch.FloatTensor, inject_embedding: torch.FloatTensor, inject_position: int):
     hidden_states[0, inject_position, :] = inject_embedding
@@ -193,6 +205,18 @@ def _inject(hidden_states: torch.FloatTensor, inject_embedding: torch.FloatTenso
 
 class AblInjLayerWrapper(InjectLayerWrapper, AblationLayerWrapper):
 
+    FORWARD_CHECK = lambda keys, map: sum([[key] if key in map else [] for key in keys], [])
+    FORWARD_MAP = {
+        frozenset([InjectLayerWrapper.INJECT_CANDIDATES, AblationLayerWrapper.ABLATION_CANDIDATES]): 
+            lambda self, kwargs: self._wrapped_forward_ablinj(**kwargs),
+        frozenset([InjectLayerWrapper.INJECT_CANDIDATES]):
+            lambda self, kwargs: InjectLayerWrapper._wrapped_forward(self, **kwargs),
+        frozenset([AblationLayerWrapper.ABLATION_CANDIDATES]):
+            lambda self, kwargs: AblationLayerWrapper._wrapped_forward(self, **kwargs),
+        frozenset([]):
+            lambda self, kwargs: LayerWrapper._wrapped_forward(self, **kwargs),
+    }
+
     def _wrapped_forward_ablinj(
         self,
         abl_cand = [],
@@ -200,38 +224,31 @@ class AblInjLayerWrapper(InjectLayerWrapper, AblationLayerWrapper):
         skip_ffnn: bool = False,
         **kwargs
     ):
-        # TODO: Find a better solution
         output = kwargs
         if AblationPosition.ATTENTION in [c.position for c in abl_cand]:
             residual_without_attention = output[CURR_HIDDEN_STATE]
             output = self._attn_forward_inject(**output)
-
             output[self.intermediate_module_output] = residual_without_attention
             output[CURR_HIDDEN_STATE] = residual_without_attention
-            
         else:
             output = self._attn_forward_inject(**output)
+
         if AblationPosition.FFNN in [c.position for c in abl_cand]:
             current_output = output[CURR_HIDDEN_STATE]
             output = self._ffnn_forward_inject(**output)
             output[CURR_HIDDEN_STATE] = current_output
         else:
             output = self._ffnn_forward_inject(**output)
-        #
+
         output |= {self.module_output: output[CURR_HIDDEN_STATE]}
         
         return output
 
     def _wrapped_forward(self, **kwargs): # pylint:disable=W0221
-        # TODO: Find a better solution
-        if InjectLayerWrapper.INJECT_CANDIDATES in kwargs and AblationLayerWrapper.ABLATION_CANDIDATES in kwargs:
-            return self._wrapped_forward_ablinj(**kwargs)
-        elif AblationLayerWrapper.ABLATION_CANDIDATES in kwargs:
-            return AblationLayerWrapper._wrapped_forward(self, **kwargs)
-        elif InjectLayerWrapper.INJECT_CANDIDATES in kwargs:
-            return InjectLayerWrapper._wrapped_forward(self, **kwargs)
-        else:
-            return LayerWrapper._wrapped_forward(self, **kwargs)
+        return AblInjLayerWrapper.FORWARD_MAP[frozenset(AblInjLayerWrapper.FORWARD_CHECK(
+            [InjectLayerWrapper.INJECT_CANDIDATES, AblationLayerWrapper.ABLATION_CANDIDATES], 
+            kwargs,
+        ))](self, kwargs)
 
 class AblInjLayersWrapper(InjectLayersWrapper, AblationLayersWrapper):
     _layer_dtype: Type[ModuleWrapper] = AblInjLayerWrapper

@@ -1,4 +1,4 @@
-from typing import Type, Optional, Tuple
+from typing import Type, Optional, Tuple, List, Dict
 from enum import Enum
 from dataclasses import dataclass, replace
 
@@ -37,10 +37,8 @@ class AblationLayerWrapper(LayerWrapper):
         if AblationPosition.ATTENTION in [c.position for c in abl_cand]:
             residual_without_attention = output[CURR_HIDDEN_STATE]
             output = self._attn_forward(**output)
-
             output[self.intermediate_module_output] = residual_without_attention
             output[CURR_HIDDEN_STATE] = residual_without_attention
-            
         else:
             output = self._attn_forward(**output)
 
@@ -50,8 +48,7 @@ class AblationLayerWrapper(LayerWrapper):
             output[CURR_HIDDEN_STATE] = current_output
         else:
             output = self._ffnn_forward(**output)
-        
-        #
+
         output |= {self.module_output: output[CURR_HIDDEN_STATE]}
 
         return output
@@ -107,12 +104,20 @@ class AblationCausalLMWrapper(ParameterCausalLMWrapper):
         self.add_parameters([AblationCausalLMWrapper.ABLATIONS_PARAMETER])
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
-        # Adjust layer ranges
-        ablations = kwargs.pop(AblationCausalLMWrapper.ABLATIONS_PARAMETER, [])
-        new_ablations = []
-        for ab in ablations:
-            if type(ab.layers) not in [list, tuple]:
-                ab.layers = (ab.layers, ab.layers)
-        kwargs |= {AblationCausalLMWrapper.ABLATIONS_PARAMETER: ablations}
-
         return ParameterCausalLMWrapper.generate(self, *args, **kwargs)
+
+    def prepare_ablations(self, ablations: List[Dict], layer_offset: bool = True):
+        layer_offset = 1 if layer_offset else 0
+        return [
+            AblationInfo(
+                **abl | {
+                    # Adjust layer ranges and add layer visualization offset
+                    "layers": (
+                        abl["layers"] - layer_offset, abl["layers"] - layer_offset
+                        ) if type(abl["layers"]) not in [list, tuple] else (
+                            abl["layers"][0] - layer_offset, abl["layers"][1] - layer_offset
+                        ),
+                }
+            )
+            for abl in ablations
+        ]
