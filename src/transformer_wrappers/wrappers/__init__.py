@@ -4,6 +4,6 @@ from .resizable import ResizableTokenizer, ResizableTransformerWrapper, Resizabl
 from .circuit import CircuitCausalLMWrapper
 from .parameter import ParameterCausalLMWrapper
 from .ablation import AblationCausalLMWrapper, AblationInfo, AblationPosition
-from .inject import AblInjCausalLMWrapper, InjectCausalLMWrapper, InjectInfo, InjectPosition
+from .inject import AblInjCausalLMWrapper, InjectCausalLMWrapper, InjectInfo, InjectPosition, InjectionStrategy
 
 from .utils import transformer_mapping, causal_lm_mapping

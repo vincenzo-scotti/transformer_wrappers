@@ -11,6 +11,10 @@ from .ablation import AblationCausalLMWrapper, AblationTransformerWrapper, Ablat
 from .constants import * # pylint:disable=W0401,W0614
 
 
+class InjectionStrategy(Enum):
+    REPLACE = "replace"
+    REMOVE_FIRST_COMPONENT = "remove_fc"
+
 class InjectPosition(Enum):
     ATTENTION = "inject_attention"
     INTERMEDIATE = "inject_intermediate"
@@ -23,7 +27,45 @@ class InjectInfo:
     token: int
     position: InjectPosition
     embedding: torch.FloatTensor
+    strategy: InjectionStrategy = InjectionStrategy.REPLACE
+    decoding_matrix: torch.Tensor = None
     index: int = -1
+
+
+def _inject_replace(hidden_states, inject_info: InjectInfo):
+    hidden_states[0, inject_info.index, :] = inject_info.embedding
+    return hidden_states
+
+def _inject_remove_fc(hidden_states, inject_info: InjectInfo):
+    inj_emb = inject_info.embedding
+    decoding_matrix = inject_info.decoding_matrix.to(hidden_states.device)
+
+    # TODO: is normalization correct?
+    inj_emb = torch.nn.functional.normalize(inj_emb, p=2, dim=-1)
+
+    target_state = hidden_states[0, inject_info.index, :]
+    target_fc_id = torch.argmax(torch.matmul(target_state, decoding_matrix.T))
+    target_fc = decoding_matrix[target_fc_id]
+    # TODO: is normalization correct?
+    target_fc = torch.nn.functional.normalize(target_fc, p=2, dim=-1)
+
+    scaling_factor = torch.dot(target_state.squeeze(), inj_emb.squeeze())
+    inject = target_state + scaling_factor * (inj_emb - target_fc)
+
+    hidden_states[0, inject_info.index, :] = inject
+
+    return hidden_states
+
+_INJECTION_STRATEGY_MAP = {
+    InjectionStrategy.REPLACE: _inject_replace,
+    InjectionStrategy.REMOVE_FIRST_COMPONENT: _inject_remove_fc,
+}
+
+def _inject(
+    hidden_states: torch.FloatTensor,
+    inject_info: InjectInfo,
+):
+    return _INJECTION_STRATEGY_MAP[inject_info.strategy](hidden_states, inject_info)
 
 
 class InjectLayerWrapper(LayerWrapper):
@@ -46,7 +88,7 @@ class InjectLayerWrapper(LayerWrapper):
         # Injection ATTENTION
         attention_output |= {
             self.attention_wrapper.module_output: _inject(
-                attention_output[self.attention_wrapper.module_output], inj_info.embedding, inj_info.index
+                attention_output[self.attention_wrapper.module_output], inj_info
             )
             for inj_info in inj_cand if inj_info.position == InjectPosition.ATTENTION
         }
@@ -58,7 +100,7 @@ class InjectLayerWrapper(LayerWrapper):
 
         # Injection INTERMEDIATE
         current_hidden_state = [
-            _inject(current_hidden_state, inj_info.embedding, inj_info.index)
+            _inject(current_hidden_state, inj_info)
             if inj_info.position == InjectPosition.INTERMEDIATE else current_hidden_state
             for inj_info in inj_cand
         ][0]
@@ -91,7 +133,7 @@ class InjectLayerWrapper(LayerWrapper):
         # Injection FFNN
         ffnn_output |= {
             self.feed_forward_wrapper.module_output: _inject(
-                ffnn_output[self.feed_forward_wrapper.module_output], inj_info.embedding, inj_info.index
+                ffnn_output[self.feed_forward_wrapper.module_output], inj_info
             )
             for inj_info in inj_cand if inj_info.position == InjectPosition.FFNN
         }
@@ -103,7 +145,7 @@ class InjectLayerWrapper(LayerWrapper):
 
         # Injection OUTPUT
         current_hidden_state = [
-            _inject(current_hidden_state, inj_info.embedding, inj_info.index)
+            _inject(current_hidden_state, inj_info)
             if inj_info.position == InjectPosition.OUTPUT else current_hidden_state
             for inj_info in inj_cand
         ][0]
@@ -194,11 +236,6 @@ class InjectCausalLMWrapper(ParameterCausalLMWrapper):
             )
             for inj in injections
         ]
-
-
-def _inject(hidden_states: torch.FloatTensor, inject_embedding: torch.FloatTensor, inject_position: int):
-    hidden_states[0, inject_position, :] = inject_embedding
-    return hidden_states
 
 
 
