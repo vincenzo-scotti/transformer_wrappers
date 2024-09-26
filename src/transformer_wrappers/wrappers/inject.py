@@ -1,4 +1,4 @@
-from typing import Type, Optional, List, Dict
+from typing import Type, Optional, List, Dict, Callable
 from enum import Enum
 from dataclasses import dataclass
 
@@ -29,27 +29,29 @@ class InjectInfo:
     embedding: torch.FloatTensor
     strategy: InjectionStrategy = InjectionStrategy.REPLACE
     decoding_matrix: torch.Tensor = None
+    decoding_norm: Callable = lambda x: x
     index: int = -1
 
 
 def _inject_replace(hidden_states, inject_info: InjectInfo):
-    hidden_states[0, inject_info.index, :] = inject_info.embedding
+    inj_emb = inject_info.embedding
+    norm_inj_emb = inject_info.decoding_norm(inj_emb)
+    hidden_states[0, inject_info.index, :] = norm_inj_emb
     return hidden_states
 
 def _inject_remove_fc(hidden_states, inject_info: InjectInfo):
     inj_emb = inject_info.embedding
     decoding_matrix = inject_info.decoding_matrix.to(hidden_states.device)
 
-    # TODO: is normalization correct?
     inj_emb = torch.nn.functional.normalize(inj_emb, p=2, dim=-1)
 
     target_state = hidden_states[0, inject_info.index, :]
-    target_fc_id = torch.argmax(torch.matmul(target_state, decoding_matrix.T))
+    target_state_norm = inject_info.decoding_norm(target_state)
+    target_fc_id = torch.argmax(torch.matmul(target_state_norm, decoding_matrix.T))
     target_fc = decoding_matrix[target_fc_id]
-    # TODO: is normalization correct?
     target_fc = torch.nn.functional.normalize(target_fc, p=2, dim=-1)
 
-    scaling_factor = torch.dot(target_state.squeeze(), inj_emb.squeeze())
+    scaling_factor = torch.dot(target_state.squeeze(), target_fc.squeeze())
     inject = target_state + scaling_factor * (inj_emb - target_fc)
 
     hidden_states[0, inject_info.index, :] = inject
