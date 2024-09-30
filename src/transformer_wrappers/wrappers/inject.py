@@ -11,11 +11,11 @@ from .ablation import AblationCausalLMWrapper, AblationTransformerWrapper, Ablat
 from .constants import * # pylint:disable=W0401,W0614
 
 
-class InjectionStrategy(Enum):
+class InjectionStrategy(str, Enum):
     REPLACE = "replace"
     REMOVE_FIRST_COMPONENT = "remove_fc"
 
-class InjectPosition(Enum):
+class InjectPosition(str, Enum):
     ATTENTION = "inject_attention"
     INTERMEDIATE = "inject_intermediate"
     FFNN = "inject_ffnn"
