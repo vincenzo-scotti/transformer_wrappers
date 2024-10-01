@@ -27,22 +27,26 @@ class AblationLayerWrapper(LayerWrapper):
 
     def _wrapped_forward_ablation(
         self,
-        abl_cand = [],
+        abl_cand = list(),
         skip_attention: bool = False,
         skip_ffnn: bool = False,
         **kwargs
     ):
         output = kwargs
 
-        if AblationPosition.ATTENTION in [c.position for c in abl_cand]:
-            residual_without_attention = output[CURR_HIDDEN_STATE]
+        ablation_positions = [c.position for c in abl_cand]
+        ablation_mask = torch.zeros_like(output["position_ids"].squeeze(dim=0), dtype=torch.bool)
+        ablation_mask[torch.tensor([c.index.squeeze() for c in abl_cand])] = True
+
+        if AblationPosition.ATTENTION in ablation_positions:
+            residual_without_attention = output[CURR_HIDDEN_STATE][:, ablation_mask, :]
             output = self._attn_forward(**output)
-            output[self.intermediate_module_output] = residual_without_attention
-            output[CURR_HIDDEN_STATE] = residual_without_attention
+            output[self.intermediate_module_output][:, ablation_mask, :] = residual_without_attention
+            output[CURR_HIDDEN_STATE][:, ablation_mask, :] = residual_without_attention
         else:
             output = self._attn_forward(**output)
 
-        if AblationPosition.FFNN in [c.position for c in abl_cand]:
+        if AblationPosition.FFNN in ablation_positions:
             current_output = output[CURR_HIDDEN_STATE]
             output = self._ffnn_forward(**output)
             output[CURR_HIDDEN_STATE] = current_output
