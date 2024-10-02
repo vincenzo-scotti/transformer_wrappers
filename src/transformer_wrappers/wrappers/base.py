@@ -313,7 +313,7 @@ class AttentionWrapper(ModuleWrapper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Attribute names
-        self._qkv_proj_attr: Union[AttnQKVProjectionAttr, AttnQKVProjectionsAttr] = self._qkv_proj_attr()
+        self._qkv_proj_attr: Union[AttnQKVProjectionAttr, AttnQKVProjectionsAttr] = self._get_qkv_proj_attr()
         self._out_proj_attr: AttnOutProjectionAttr = self._out_proj_attr()
         self._dropout_attr: Optional[AttnDropoutAttr] = self._get_dropout_attr()
 
