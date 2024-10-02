@@ -8,7 +8,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import Parameter
 from torch.utils.data import Dataset, DataLoader
 import lightning as L
 from lightning.pytorch import callbacks as pl_callbacks
@@ -32,15 +31,14 @@ from transformers import logging as hf_logging
 
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, AutoPeftModel, AutoPeftModelForCausalLM
-from peft import load_peft_weights, set_peft_model_state_dict
 from peft.peft_model import PeftModel
 
 from .constants import *
 from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
-from transformer_wrappers.utils.metrics import PPLScore, BLEUScore, F1Score, DistinctNScore
+from transformer_wrappers.utils.metrics import PPLScore
 
 from enum import Enum
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Iterator
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 # TODO fix base model/module properties and wrapper enable/disable methods
 # TODO implement gradient checkpointing
@@ -78,6 +76,23 @@ class TransformerEmbeddingAttr(Enum):
 
 class TransformerPositionEmbeddingAttr(Enum):
     WPE = 'wpe'
+
+
+class AttnQKVProjectionAttr(Enum):
+    C_ATTN = 'c_attn'
+
+
+class AttnQKVProjectionsAttr(Enum):
+    QKV_ATTN = ('q_proj', 'k_proj', 'v_proj')
+
+
+class AttnOutProjectionAttr(Enum):
+    C_PROJ = 'c_proj'
+    O_PROJ = 'o_proj'
+
+
+class AttnDropoutAttr(Enum):
+    DROPOUT = 'dropout'
 
 
 class FFNNUpProjectionAttr(Enum):
@@ -142,17 +157,29 @@ class LMHeadAttr(Enum):
 
 
 AttrEnumTypes: Type = Union[
+    AttnQKVProjectionAttr, AttnOutProjectionAttr, AttnDropoutAttr,
     FFNNGateProjectionAttr, FFNNUpProjectionAttr, FFNNDownProjectionAttr, FFNNActivationFunctionAttr, FFNNDropoutAttr,
     LayerInitialNormAttr, LayerAttentionAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
     TransformerEmbeddingAttr, TransformerPositionEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr,
     LMTransformerAttr, LMHeadAttr
 ]
 
+MultiAttrEnumTypes: Type = Union[AttnQKVProjectionsAttr]
+
 
 def _get_module_attr_name(model: nn.Module, attr_names: Type[AttrEnumTypes]):
     #
     for attr in attr_names:
         if hasattr(model, attr.value):
+            return attr
+    #
+    raise ValueError(f'Unsupported module type `{type(model)}` for attribute `{attr_names}`.')
+
+
+def _get_modules_attr_name(model: nn.Module, attr_names: Type[MultiAttrEnumTypes]):
+    #
+    for attr in attr_names:
+        if all(hasattr(model, attr_id) for attr_id in attr.value):
             return attr
     #
     raise ValueError(f'Unsupported module type `{type(model)}` for attribute `{attr_names}`.')
@@ -283,6 +310,47 @@ class AttentionWrapper(ModuleWrapper):
     attention_weights: str = CURR_ATTN_WEIGHTS
     key_value: str = CURR_KEY_VALUE
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Attribute names
+        self._qkv_proj_attr: Union[AttnQKVProjectionAttr, AttnQKVProjectionsAttr] = self._qkv_proj_attr()
+        self._out_proj_attr: AttnOutProjectionAttr = self._out_proj_attr()
+        self._dropout_attr: Optional[AttnDropoutAttr] = self._get_dropout_attr()
+
+    def _get_qkv_proj_attr(self) -> Union[AttnQKVProjectionAttr, AttnQKVProjectionsAttr]:
+        try:
+            return _get_module_attr_name(self.base_module, AttnQKVProjectionAttr)
+        except ValueError:
+            return _get_modules_attr_name(self.base_module, AttnQKVProjectionsAttr)
+
+    def _out_proj_attr(self) -> AttnOutProjectionAttr:
+        return _get_module_attr_name(self.base_module, AttnOutProjectionAttr)
+
+    def _get_dropout_attr(self) -> Optional[AttnDropoutAttr]:
+        try:
+            return _get_module_attr_name(self.base_module, AttnDropoutAttr)
+        except ValueError:
+            return None
+
+    @property
+    def qkv_proj(self) -> Union[Tuple[nn.Module, nn.Module, nn.Module], nn.Module]:
+        try:
+            return getattr(self.base_module, self._qkv_proj_attr.value)
+        except AttributeError:
+            return tuple(getattr(self.base_module, attr_id) for attr_id in self._qkv_proj_attr.value)
+
+    @property
+    def split_proj(self):
+        return isinstance(self.qkv_proj, tuple)
+
+    @property
+    def out_proj(self) -> nn.Module:
+        return getattr(self.base_module, self._out_proj_attr.value)
+
+    @property
+    def dropout(self) -> Optional[nn.Module]:
+        return getattr(self.base_module, self._dropout_attr.value) if self._dropout_attr is not None else None
+
     def _pre_process_input(self, *args, layer_idx: Optional[int] = None, **kwargs):
         #
         attention_params = {
@@ -404,7 +472,7 @@ class FeedForwardWrapper(ModuleWrapper):
             return None
 
     @property
-    def gate_proj(self) -> nn.Module:
+    def gate_proj(self) -> Optional[nn.Module]:
         return getattr(self.base_module, self._gate_proj_attr.value) if self._gate_proj_attr is not None else None
 
     @property
@@ -1624,12 +1692,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         else:
             #
             logits = kwargs.pop(self.model_output)
-            if labels:
-                shift_logits = logits[..., :-1, :].contiguous().view(-1, self.config.vocab_size)
-                shift_labels = labels[..., 1:].contiguous().view(-1).to(shift_logits.device)
-                loss = F.cross_entropy(shift_logits, shift_labels)
-            else:
-                loss = None
+            loss = self._loss(logits, labels) if labels else None
             #
             kwargs |= {
                 LOGITS: logits,
@@ -1736,6 +1799,16 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             self.prepare_output([sample['text'] for sample in samples])
         )
 
+    def _loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # Shift logits to exclude the last element
+        logits = logits[..., :-1, :].contiguous()
+        # shift labels to exclude the first element
+        labels = labels[..., 1:].contiguous()
+        # Compute LM loss token-wise
+        loss: torch.Tensor = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return loss
+
     def _step(
             self, split: str, mini_batch: Tuple[BatchEncoding, torch.Tensor], mini_batch_idx: int
     ) -> Tuple[Dict, torch.Tensor]:
@@ -1743,14 +1816,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         input_encodings, labels = mini_batch
         # Compute output
         wrapper_output = self.forward(**input_encodings)
-        # Compute logits
-        logits: torch.tensor = wrapper_output.logits
-        # Shift logits to exclude the last element
-        logits = logits[..., :-1, :].contiguous()
-        # shift labels to exclude the first element
-        labels = labels[..., 1:].contiguous()
         # Compute LM loss token-wise
-        loss: torch.tensor = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+        loss: torch.Tensor = self._loss(wrapper_output.logits, labels)
 
         # Log LM loss
         self.log(f'Loss/{split.capitalize()}', loss)

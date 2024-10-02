@@ -15,6 +15,7 @@ LAST_HIDDEN_STATE: str = 'last_hidden_state'
 
 LOGITS: str = 'logits'
 
+LABELS: str = 'labels'
 LOSS: str = 'loss'
 
 USE_CACHE: str = 'use_cache'
