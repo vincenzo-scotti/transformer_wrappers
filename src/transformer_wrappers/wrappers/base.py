@@ -1155,6 +1155,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         if gradient_checkpointing:
             wrapper.gradient_checkpointing_enable()
 
+        wrapper.enable_wrapper()
+
         return wrapper
 
     def save_pretrained(self, *args, **kwargs):
