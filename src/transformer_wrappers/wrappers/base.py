@@ -1743,6 +1743,10 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
         return inputs
 
+    def get_input_embeddings(self):
+        return self.transformer_wrapper.get_input_embeddings()
+
+
     # TODO implement other PreTrainedModel methods
 
     # Lightning Module
@@ -1944,6 +1948,3 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         logging.info(f"Testing completed (elapsed time: {stop_time - start_time})")
 
         return self
-
-    def get_input_embeddings(self):
-        return self.transformer_wrapper.get_input_embeddings()
