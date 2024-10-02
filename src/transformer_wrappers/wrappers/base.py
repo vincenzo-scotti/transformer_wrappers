@@ -1694,7 +1694,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         else:
             #
             logits = kwargs.pop(self.model_output)
-            loss = self._loss(logits, labels) if labels else None
+            loss = self._loss(logits, labels) if labels is not None else None
             #
             kwargs |= {
                 LOGITS: logits,
