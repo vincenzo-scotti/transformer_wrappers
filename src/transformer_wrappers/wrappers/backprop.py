@@ -37,16 +37,16 @@ class BackPropAttentionWrapper(AttentionWrapper):
     def get_gradients(self):
         return {
             'qkv_proj': {
-                'weights': self.qvk_proj.weights.grad,
-                'bias': self.qvk_proj.bias.grad if self.qvk_proj.bias is not None else None
+                'weights': self.qkv_proj.weight.grad,
+                'bias': self.qkv_proj.bias.grad if self.qkv_proj.bias is not None else None
             } if not self.split_proj else {
                 f'{proj_id}_proj': {
-                    'weights': module.weights.grad,
+                    'weights': module.weight.grad,
                     'bias': module.bias.grad if module.bias is not None else None
-                } for proj_id, module in zip('qkv', self.qvk_proj)
+                } for proj_id, module in zip('qkv', self.qkv_proj)
             },
             'out_proj': {
-                'weights': self.out_proj.weights.grad,
+                'weights': self.out_proj.weight.grad,
                 'bias': self.out_proj.bias.grad if self.out_proj.bias is not None else None
             }
         }
@@ -56,15 +56,15 @@ class BackPropFeedForwardWrapper(FeedForwardWrapper):
     def get_gradients(self):
         return {
             'up_proj': {
-                'weights': self.up_proj.weights.grad,
+                'weights': self.up_proj.weight.grad,
                 'bias': self.up_proj.bias.grad if self.up_proj.bias is not None else None
             },
             'down_proj': {
-                'weights': self.down_proj.weights.grad,
+                'weights': self.down_proj.weight.grad,
                 'bias': self.down_proj.bias.grad if self.down_proj.bias is not None else None
             }
         } | ({'gate_proj': {
-            'weights': self.gate_proj.weights.grad,
+            'weights': self.gate_proj.weight.grad,
             'bias': self.gate_proj.bias.grad if self.gate_proj.grad is not None else None
         }} if self.gate_proj is not None else dict())
 
@@ -72,8 +72,8 @@ class BackPropFeedForwardWrapper(FeedForwardWrapper):
 class BackPropLayerWrapper(LayerWrapper):
     module_output: str = 'parallel_layer_output'
 
-    _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
-    _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
+    _attention_dtype: Type[ModuleWrapper] = BackPropAttentionWrapper
+    _feed_forward_dtype: Type[ModuleWrapper] = BackPropFeedForwardWrapper
 
     # TODO fixme
     def _attn_forward(
@@ -159,6 +159,18 @@ class BackPropLayerWrapper(LayerWrapper):
 
         return output
 
+    def get_gradients(self):
+        return {
+            'attention': self.attention_wrapper.get_gradients(),
+            'ffnn': self.feed_forward_wrapper.get_gradients()
+        }
+
+
+class BackPropLayersWrapper(LayersWrapper):
+    TMP_HIDDEN_STATE: str = 'tmp_hidden_state'
+
+    _layer_dtype: Type[ModuleWrapper] = BackPropLayerWrapper
+
     def _wrapped_forward(
             self,
             detach_hidden_state: Optional[int] = None,
@@ -189,19 +201,7 @@ class BackPropLayerWrapper(LayerWrapper):
         return output
 
     def get_gradients(self):
-        return {
-            'attention': self.attention_wrapper.get_gradients(),
-            'ffnn': self.ffnn_wrapper.get_gradients()
-        }
-
-
-class BackPropLayersWrapper(LayersWrapper):
-    TMP_HIDDEN_STATE: str = 'tmp_hidden_state'
-
-    _layer_dtype: Type[ModuleWrapper] = BackPropLayerWrapper
-
-    def get_gradients(self):
-        return [layer.get_gradient() for layer in self.layer_wrappers]
+        return [layer.get_gradients() for layer in self.layer_wrappers]
 
 
 class BackPropTransformerWrapper(TransformerWrapper):
@@ -275,13 +275,13 @@ class BackPropCausalLMWrapper(CausalLMWrapper):
             layer = len(self.transformer.layers)
         #
         if layer == 0:
-            w = self.transformer.get_input_embeddings().weight.T
-        elif layer == len(self.transformer.layers):
+            w = self.get_input_embeddings().weight
+        elif layer == len(self.transformer_wrapper.layers_wrapper.layer_wrappers):
             w = self.lm_head_wrapper.base_module.weight
         else:
             w = (
-                ((1 - layer / len(self.transformer.layers)) * self.transformer.get_input_embeddings().weight.T) +
-                ((layer / len(self.transformer.layers)) * self.lm_head_wrapper.base_module.weight)
+                ((1 - layer / len(self.transformer_wrapper.layers_wrapper.layer_wrappers)) * self.get_input_embeddings().weight) +
+                ((layer / len(self.transformer_wrapper.layers_wrapper.layer_wrappers)) * self.lm_head_wrapper.base_module.weight)
             )
 
         return partial(F.linear, weight=w)
@@ -298,15 +298,13 @@ class BackPropCausalLMWrapper(CausalLMWrapper):
             base_model_output=base_model_output,
             labels=labels,
             logits_layer=logits_layer,
-            intermediate_state=logits_from_intermediate_state,
+            logits_from_intermediate_state=logits_from_intermediate_state,
             **kwargs
         )
         #
-        if base_model_output or labels is None:
-            return kwargs
-        else:
+        if not base_model_output and labels is not None:
             if logits_layer is None:
-                hidden_state = kwargs[LAST_HIDDEN_STATE]
+                hidden_state = kwargs[OUT_HIDDEN_STATE]
                 logits = kwargs[LOGITS]
                 loss = kwargs[LOSS]
             else:
@@ -316,7 +314,7 @@ class BackPropCausalLMWrapper(CausalLMWrapper):
                 ][logits_layer - int(logits_from_intermediate_state)]
                 # TODO add normalisation for intermediate layers
                 logits = self.get_interpolated_decoder(layer=logits_layer)(hidden_state)
-                loss = self._loss(logits, labels) if labels else None
+                loss = self._loss(logits, labels) if labels is not None else None
             #
             loss.backward()
             #
@@ -329,7 +327,7 @@ class BackPropCausalLMWrapper(CausalLMWrapper):
                 }
             }
 
-            return kwargs
+        return kwargs
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
         if not self.is_wrapping:
