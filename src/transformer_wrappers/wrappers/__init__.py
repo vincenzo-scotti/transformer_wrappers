@@ -5,5 +5,7 @@ from .circuit import CircuitCausalLMWrapper
 from .parameter import ParameterCausalLMWrapper
 from .ablation import AblationCausalLMWrapper, AblationInfo, AblationPosition
 from .inject import AblInjCausalLMWrapper, InjectCausalLMWrapper, InjectInfo, InjectPosition, InjectionStrategy
+from .inject import InjectCausalLMWrapper, InjectInfo, InjectPosition
+from .backprop import BackPropCausalLMWrapper, BackPropTransformerWrapper
 
 from .utils import transformer_mapping, causal_lm_mapping
