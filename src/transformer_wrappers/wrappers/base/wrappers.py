@@ -34,10 +34,10 @@ from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, Au
 from peft.peft_model import PeftModel
 
 from .constants import *
+from .dtypes import *
 from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
 from transformer_wrappers.utils.metrics import PPLScore
 
-from enum import Enum
 from typing import Union, Optional, Type, Tuple, Dict, List, Iterable
 
 # TODO fix base model/module properties and wrapper enable/disable methods
@@ -61,110 +61,10 @@ __all__ = [
     'CausalLMWrapper'
 ]
 
-
 logger = hf_logging.get_logger(__name__)
-
 
 SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
 SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
-
-
-class TransformerEmbeddingAttr(Enum):
-    EMBED_TOKENS = 'embed_tokens'
-    WTE = 'wte'
-
-
-class TransformerPositionEmbeddingAttr(Enum):
-    WPE = 'wpe'
-
-
-class AttnQKVProjectionAttr(Enum):
-    C_ATTN = 'c_attn'
-
-
-class AttnQKVProjectionsAttr(Enum):
-    QKV_ATTN = ('q_proj', 'k_proj', 'v_proj')
-
-
-class AttnOutProjectionAttr(Enum):
-    C_PROJ = 'c_proj'
-    O_PROJ = 'o_proj'
-
-
-class AttnDropoutAttr(Enum):
-    DROPOUT = 'dropout'
-
-
-class FFNNUpProjectionAttr(Enum):
-    UP_PROJ = 'up_proj'
-    C_FC = 'c_fc'
-
-
-class FFNNGateProjectionAttr(Enum):
-    GATE_PROJ = 'gate_proj'
-
-
-class FFNNActivationFunctionAttr(Enum):
-    ACT_FN = 'act_fn'
-    ACT = 'act'
-
-
-class FFNNDownProjectionAttr(Enum):
-    DOWN_PROJ = 'down_proj'
-    C_PROJ = 'c_proj'
-
-
-class FFNNDropoutAttr(Enum):
-    DROPOUT = 'dropout'
-
-
-class LayerInitialNormAttr(Enum):
-    INPUT_LAYERNORM = 'input_layernorm'
-    LN_1 = 'ln_1'
-
-
-class LayerAttentionAttr(Enum):
-    SELF_ATTN = 'self_attn'
-    ATTN = 'attn'
-
-
-class LayerIntermediateNormAttr(Enum):
-    INPUT_LAYERNORM = 'post_attention_layernorm'
-    LN_2 = 'ln_2'
-
-
-class LayerFeedForwardAttr(Enum):
-    MLP = 'mlp'
-
-
-class TransformerLayersAttr(Enum):
-    LAYERS = 'layers'
-    H = 'h'
-
-
-class TransformerNormAttr(Enum):
-    NORM = 'norm'
-    LN_F = 'ln_f'
-
-
-class LMTransformerAttr(Enum):
-    MODEL = 'model'
-    TRANSFORMER = 'transformer'
-    
-    
-class LMHeadAttr(Enum):
-    LM_HEAD = 'lm_head'
-
-
-AttrEnumTypes: Type = Union[
-    AttnQKVProjectionAttr, AttnOutProjectionAttr, AttnDropoutAttr,
-    FFNNGateProjectionAttr, FFNNUpProjectionAttr, FFNNDownProjectionAttr, FFNNActivationFunctionAttr, FFNNDropoutAttr,
-    LayerInitialNormAttr, LayerAttentionAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
-    TransformerEmbeddingAttr, TransformerPositionEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr,
-    LMTransformerAttr, LMHeadAttr
-]
-
-MultiAttrEnumTypes: Type = Union[AttnQKVProjectionsAttr]
 
 
 def _get_module_attr_name(model: nn.Module, attr_names: Type[AttrEnumTypes]):
@@ -516,13 +416,15 @@ class FeedForwardWrapper(ModuleWrapper):
             ffnn_output = self.dropout(ffnn_output)
         elif (
                 isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)) or
-                (isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self.base_module.config.pretraining_tp <= 1)
+                (isinstance(self.super_wrapper.base_module,
+                            LlamaDecoderLayer) and self.base_module.config.pretraining_tp <= 1)
         ):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = self.act_fn(self.gate_proj(current_hidden_state))
             inner_activations = gate_output * up_proj_output
             ffnn_output = self.down_proj(inner_activations)
-        elif isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self.base_module.config.pretraining_tp > 1:
+        elif isinstance(self.super_wrapper.base_module,
+                        LlamaDecoderLayer) and self.base_module.config.pretraining_tp > 1:
             # Taken from https://github.com/huggingface/transformers/blob/main/src/transformers/models/llama/modeling_llama.py#L200
             slice = self.base_module.intermediate_size // self.base_module.config.pretraining_tp
             gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
@@ -783,11 +685,13 @@ class LayerWrapper(ModuleWrapper):
             if return_attention_output:
                 output[ATTN_OUTPUT] = attention_output[self.attention_wrapper.module_output]
             if return_feed_forward_up_proj_output:
-                output[CURR_FFNN_UP_PROJ_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_up_proj_output]
+                output[CURR_FFNN_UP_PROJ_OUTPUT] = feed_forward_output[
+                    self.feed_forward_wrapper.feed_forward_up_proj_output]
             if return_feed_forward_gate_output:
                 output[CURR_FFNN_GATE_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.feed_forward_gate_output]
             if return_feed_forward_inner_activations:
-                output[CURR_FFNN_INNER_ACTIVATIONS] = feed_forward_output[self.feed_forward_wrapper.feed_forward_inner_activations]
+                output[CURR_FFNN_INNER_ACTIVATIONS] = feed_forward_output[
+                    self.feed_forward_wrapper.feed_forward_inner_activations]
             if return_feed_forward_output:
                 output[FFNN_OUTPUT] = feed_forward_output[self.feed_forward_wrapper.module_output]
 
@@ -1005,13 +909,15 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = None
         elif isinstance(self.super_wrapper.internal_model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
             attention_mask = self.super_wrapper.internal_model._update_causal_mask(
-                valid_mask, kwargs[EMBEDDINGS], kwargs[CACHE_POSITION], kwargs[PAST_KEY_VALUES], kwargs[OUTPUT_ATTENTIONS]
+                valid_mask, kwargs[EMBEDDINGS], kwargs[CACHE_POSITION], kwargs[PAST_KEY_VALUES],
+                kwargs[OUTPUT_ATTENTIONS]
             )
             # TODO find better solution
             if attention_mask.size()[-2] != kwargs[SEQ_LENGTH] or attention_mask.size()[-1] != kwargs[SEQ_LENGTH]:
                 attention_mask = attention_mask[..., :kwargs[SEQ_LENGTH], :kwargs[SEQ_LENGTH]]
         elif isinstance(self.super_wrapper.internal_model, MistralPreTrainedModel):
-            if valid_mask is not None and self.super_wrapper.internal_model._attn_implementation == 'flash_attention_2' and kwargs[BATCH_SIZE] > 1:
+            if valid_mask is not None and self.super_wrapper.internal_model._attn_implementation == 'flash_attention_2' and \
+                    kwargs[BATCH_SIZE] > 1:
                 if valid_mask[:, -1].sum().item() != kwargs[BATCH_SIZE]:
                     raise ValueError('`padding_side=\'right\'` is not with the Flash Attention version of Mistral')
             if self.super_wrapper.internal_model._attn_implementation == 'flash_attention_2':
@@ -1144,8 +1050,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         #
         auto_model_dtype = cls._auto_model_dtype if not peft else cls._auto_peft_model_dtype
         model = auto_model_dtype.from_pretrained(
-                pretrained_model_name_or_path, *model_args, **model_kwargs,
-            )
+            pretrained_model_name_or_path, *model_args, **model_kwargs,
+        )
         if lora_configs is not None:
             model = prepare_model_for_kbit_training(model)
             model = get_peft_model(model, lora_configs)
@@ -1175,7 +1081,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     @property
     def base_model(self) -> PreTrainedModel:
         return self._model
-        
+
     @property
     def internal_model(self) -> PreTrainedModel:
         if isinstance(self.base_model, PeftModel):
@@ -1725,7 +1631,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             return self.forward(
                 input_ids=generate_output,
                 **{
-                    k: kwargs.get(k) for k in set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
+                    k: kwargs.get(k) for k in
+                    set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
                     if k not in {'args', 'kwargs', 'self', 'base_model_output'}
                 },
                 return_dict=True,
@@ -1749,7 +1656,6 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
     def get_input_embeddings(self):
         return self.transformer_wrapper.get_input_embeddings()
-
 
     # TODO implement other PreTrainedModel methods
 
@@ -1905,7 +1811,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             split: DataLoader(
                 data,
                 collate_fn=self.collate,
-                shuffle=split == 'train' and len(data) < 10000,  # TODO find better solution to shuffling large data sets
+                shuffle=split == 'train' and len(data) < 10000,
+                # TODO find better solution to shuffling large data sets
                 **self.data_loader_params[split]
             )
             for split, data in data_splits.items()
