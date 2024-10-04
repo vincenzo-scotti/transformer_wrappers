@@ -275,6 +275,10 @@ class EmbeddingWrapper(ModuleWrapper):
     def position_embeddings(self) -> Optional[nn.Embedding]:
         return self._position_embeddings[0]
 
+    @property
+    def embedding_dim(self) -> int:
+        return self.base_module.embedding_dim
+
     def _wrapped_forward(
             self,
             input_ids: Optional[torch.LongTensor] = None,
