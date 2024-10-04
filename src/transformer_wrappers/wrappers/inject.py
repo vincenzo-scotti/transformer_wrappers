@@ -8,7 +8,7 @@ from .base import TransformerWrapper
 from .base import LayerWrapper, LayersWrapper, ModuleWrapper
 from .parameter import ParameterCausalLMWrapper
 from .ablation import AblationCausalLMWrapper, AblationTransformerWrapper, AblationLayersWrapper, AblationLayerWrapper, AblationPosition
-from .constants import * # pylint:disable=W0401,W0614
+from .base.constants import * # pylint:disable=W0401,W0614
 
 
 class InjectionStrategy(str, Enum):

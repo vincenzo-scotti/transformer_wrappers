@@ -13,7 +13,7 @@ from .base import ModuleWrapper, PreTrainedModelWrapper
 from .base import LayerWrapper, LayersWrapper
 from .base import TransformerWrapper, CausalLMWrapper
 
-from .constants import *
+from .base.constants import *
 
 
 __all__ = [

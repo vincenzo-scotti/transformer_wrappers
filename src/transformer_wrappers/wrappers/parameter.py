@@ -5,7 +5,7 @@ from copy import copy
 import inspect
 
 from .base import  CausalLMWrapper
-from .constants import * # pylint:disable=W0401,W0614
+from .base.constants import * # pylint:disable=W0401,W0614
 
 
 class ParameterCausalLMWrapper(CausalLMWrapper):

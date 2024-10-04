@@ -10,10 +10,10 @@ from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
 
 from transformers import logging
 
-from .constants import *
+from .base.constants import *
 
 from .base import FeedForwardWrapper, LayerWrapper, LayersWrapper, TransformerWrapper, \
-    CausalLMWrapper, ModuleWrapper
+    CausalLMWrapper, ModuleWrapper, PreTrainedModelWrapper, EmbeddingWrapper, AttentionWrapper, LMHeadWrapper
 
 from enum import Enum
 from typing import Union, Optional, Type, Tuple, Dict, List, Iterable

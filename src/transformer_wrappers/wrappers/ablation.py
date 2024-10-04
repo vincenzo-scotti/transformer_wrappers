@@ -7,7 +7,7 @@ import torch
 from .base import TransformerWrapper
 from .base import LayerWrapper, LayersWrapper, ModuleWrapper
 from .parameter import ParameterCausalLMWrapper
-from .constants import * # pylint:disable=W0401,W0614
+from .base.constants import * # pylint:disable=W0401,W0614
 
 
 class AblationPosition(Enum):
