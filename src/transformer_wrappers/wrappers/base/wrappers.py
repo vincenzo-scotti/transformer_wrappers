@@ -1020,7 +1020,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         return self.base_model.device
 
     @classmethod
-    def from_pretrained(
+    def _load_pretrained(
             cls,
             pretrained_model_name_or_path: Union[str, os.PathLike],
             model_args: Optional[Tuple] = None,
@@ -1058,6 +1058,37 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
         tokenizer = AutoTokenizer.from_pretrained(
             tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
+        )
+
+        return model, tokenizer
+
+    @classmethod
+    def from_pretrained(
+            cls,
+            pretrained_model_name_or_path: Union[str, os.PathLike],
+            model_args: Optional[Tuple] = None,
+            model_kwargs: Optional[Dict] = None,
+            quantization_configs: Optional[BitsAndBytesConfig] = None,
+            lora_configs: Optional[LoraConfig] = None,
+            peft: bool = False,
+            gradient_checkpointing: bool = False,
+            tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
+            tokenizer_args: Optional[Tuple] = None,
+            tokenizer_kwargs: Optional[Dict] = None,
+            **wrapper_kwargs
+    ):
+        model, tokenizer = cls._load_pretrained(
+            pretrained_model_name_or_path,
+            model_args=model_args,
+            model_kwargs=model_kwargs,
+            quantization_configs=quantization_configs,
+            lora_configs=lora_configs,
+            peft=peft,
+            gradient_checkpointing=gradient_checkpointing,
+            tokenizer_name_or_path=tokenizer_name_or_path,
+            tokenizer_args=tokenizer_args,
+            tokenizer_kwargs=tokenizer_kwargs,
+            **wrapper_kwargs
         )
 
         wrapper = cls(model, tokenizer)
