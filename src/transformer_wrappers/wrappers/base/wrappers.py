@@ -1028,7 +1028,6 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             quantization_configs: Optional[BitsAndBytesConfig] = None,
             lora_configs: Optional[LoraConfig] = None,
             peft: bool = False,
-            gradient_checkpointing: bool = False,
             tokenizer_name_or_path: Optional[Union[str, os.PathLike]] = None,
             tokenizer_args: Optional[Tuple] = None,
             tokenizer_kwargs: Optional[Dict] = None,
@@ -1746,7 +1745,8 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             self.prepare_output([sample['text'] for sample in samples])
         )
 
-    def _loss(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+    @staticmethod
+    def _loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         # Shift logits to exclude the last element
         logits = logits[..., :-1, :].contiguous()
         # shift labels to exclude the first element
