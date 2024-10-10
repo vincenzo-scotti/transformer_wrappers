@@ -1003,7 +1003,9 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
-            benchmarking: bool = False
+            *args,
+            benchmarking: bool = False,
+            **kwargs
     ):
         super().__init__(model.config)  # TODO fixme (find better solution)
         #
@@ -1011,6 +1013,11 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         self._tokenizer: PreTrainedTokenizer = tokenizer
         #
         self._benchmarking: bool = benchmarking
+        #
+        self._post_init_operations(*args, **kwargs)
+
+    def _post_init_operations(self, *args, **kwargs):
+        raise NotImplementedError()
 
     def __repr__(self):
         return repr(self.base_model)
@@ -1195,22 +1202,30 @@ class TransformerWrapper(PreTrainedModelWrapper):
     _embedding_dtype: Type[ModuleWrapper] = EmbeddingWrapper
     _layers_dtype: Type[ModuleWrapper] = LayersWrapper
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    # Attribute names
+    _embedding_attr: TransformerEmbeddingAttr
+    _position_embedding_attr: Optional[TransformerPositionEmbeddingAttr]
+    _layers_attr: TransformerLayersAttr
+    _norm_attr: TransformerNormAttr
+    # Wrappers
+    _embedding_wrapper: Tuple
+    _layers_wrapper: Tuple
+
+    def _post_init_operations(self, *args, **kwargs):
         # Attribute names
-        self._embedding_attr: TransformerEmbeddingAttr = self._get_embedding_attr()
-        self._position_embedding_attr: Optional[TransformerPositionEmbeddingAttr] = self._get_position_embedding_attr()
-        self._layers_attr: TransformerLayersAttr = self._get_layers_attr()
-        self._norm_attr: TransformerNormAttr = self._get_norm_attr()
+        self._embedding_attr = self._get_embedding_attr()
+        self._position_embedding_attr = self._get_position_embedding_attr()
+        self._layers_attr = self._get_layers_attr()
+        self._norm_attr = self._get_norm_attr()
         # Wrappers
-        self._embedding_wrapper: Tuple = self._embedding_dtype(
+        self._embedding_wrapper = self._embedding_dtype(
             getattr(self.base_model, self._embedding_attr.value),
             super_wrapper=self,
             position_embeddings=getattr(
                 self.base_model, self._position_embedding_attr.value
             ) if self._position_embedding_attr is not None else None
         ),
-        self._layers_wrapper: Tuple = self._layers_dtype(
+        self._layers_wrapper = self._layers_dtype(
             getattr(self.base_model, self._layers_attr.value), super_wrapper=self
         ),
 
@@ -1489,8 +1504,22 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
 
     lm_loss: str = 'lm_loss'
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    # Attribute names
+    _transformer_attr: LMTransformerAttr
+    _lm_head_attr: LMHeadAttr
+    # Wrappers
+    _transformer_wrapper: Tuple[TransformerWrapper]
+    _lm_head_wrapper: Tuple[LMHeadWrapper]
+
+    # Lightning module parameters for fine-tuning
+    optimiser_params: Dict
+    lr_scheduler_params: Dict
+    trainer_params: Dict
+    data_loader_params: Dict
+    metrics: Optional[MetricCollection]
+    _steps_per_epoch: Optional[int]
+
+    def _post_init_operations(self, *args, **kwargs):
         # Attribute names
         self._transformer_attr: LMTransformerAttr = self._get_transformer_attr()
         self._lm_head_attr: LMHeadAttr = self._get_lm_head_attr()
