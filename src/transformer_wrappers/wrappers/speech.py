@@ -13,13 +13,13 @@ import librosa
 
 from transformers import logging
 from transformers import PreTrainedModel, PreTrainedTokenizer
-from transformers import BatchEncoding
 from transformers import GPT2PreTrainedModel
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
 
 from typing import Type, Optional, Union, List, Iterable, Tuple, Dict
+from dataclasses import dataclass
 
 from .base import (
     SHARED_STRUCTURE_MODELS,
@@ -42,17 +42,15 @@ INPUT_SPECTROGRAMS: str = 'input_spectrograms'
 SPEECH_MASK: str = 'speech_mask'
 
 SPECTROGRAMS: str = 'spectrograms'
-MODALITY_LOGITS: str = 'modality_logits'
+MODALITY_MASK: str = 'modality_mask'
 LOSS_VALUE: str = 'loss_value'
 LOSS_COMPONENTS: str = 'loss_components'
 
 TOKEN_LABELS: str = 'token_labels'
 TARGET_SPECTROGRAMS: str = 'target_spectrograms'
-MODALITY_LABELS: str = 'modality_labels'
 
 LM_LOSS: str = 'language_modelling_loss'
 SPEC_LOSS: str = 'spectrogram_generation_loss'
-MODALITY_LOSS: str = 'modality_prediction_loss'
 
 SR: str = 'sr'
 WIN_SIZE: str = 'win_size'
@@ -60,6 +58,17 @@ HOP_SIZE: str = 'hop_size'
 N_FFT: str = 'n_fft'
 N_MEL: str = 'n_mel'
 N_MFCC: str = 'n_mfcc'
+
+
+@dataclass
+class CausalSpeechLMOutputWithPast(CausalLMOutputWithPast):
+    spectrograms: Optional[List[torch.Tensor]] = None
+
+
+@dataclass
+class CausalSpeechLMOutputWithCrossAttentions(CausalLMOutputWithCrossAttentions):
+    spectrograms: Optional[List[torch.Tensor]] = None
+
 
 logger = logging.get_logger(__name__)
 
@@ -167,7 +176,7 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
     SPEECH_ENCODER_FILE: str = 'speech_encoder.pth'
 
     def __init__(self, module: nn.Module, speech_encoder: nn.Module, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+        super().__init__(module, *args, **kwargs)
         #
         self._speech_encoder: nn.Module = speech_encoder
 
@@ -192,9 +201,9 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
         # Pad spectrograms to match required shape
         if input_spectrograms is not None:
             if isinstance(input_spectrograms, torch.Tensor):
-                input_spectrograms = self._pad_spectrogram(input_spectrograms)[None, ...]
+                input_spectrograms = self._pad_spectrogram(input_spectrograms)
             else:
-                input_spectrograms = [self._pad_spectrogram(spec)[None, ...] for spec in input_spectrograms]
+                input_spectrograms = [self._pad_spectrogram(spec) for spec in input_spectrograms]
         #
         kwargs |= {
             INPUT_SPECTROGRAMS: input_spectrograms
@@ -221,7 +230,7 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
                     [self.speech_encoder.forward(spec) for spec in input_spectrograms], dim=0
                 )
             #
-            output[self.module_output][speech_mask] = spectrogram_embedding.T
+            output[self.module_output][speech_mask] += spectrogram_embedding.T
         #
         output |= {
             SPEECH_MASK: speech_mask
@@ -233,16 +242,13 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
 class SpeechTransformerWrapper(TransformerWrapper):
     _embedding_dtype: Type[ModuleWrapper] = SpeechEmbeddingWrapper
 
-    def __init__(
+    def _post_init_operations(
             self,
-            model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer,
             audio_processor: AudioProcessor,
             speech_encoder: nn.Module,
             *args,
             **kwargs
     ):
-        super(PreTrainedModelWrapper).__init__(model, tokenizer, *args, **kwargs)
         # Attribute names
         self._embedding_attr: TransformerEmbeddingAttr = self._get_embedding_attr()
         self._position_embedding_attr: Optional[TransformerPositionEmbeddingAttr] = self._get_position_embedding_attr()
@@ -263,8 +269,9 @@ class SpeechTransformerWrapper(TransformerWrapper):
         #
         self._audio_processor: AudioProcessor = audio_processor
         #
-        self._audio_token: str = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(AUDIO_TOKEN, '<|audio|>')
-
+        self._audio_token: str = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(
+            AUDIO_TOKEN, '<|audio|>'
+        )
     @property
     def audio_processor(self) -> AudioProcessor:
         return self._audio_processor
@@ -304,7 +311,10 @@ class SpeechTransformerWrapper(TransformerWrapper):
             tokenizer_kwargs=tokenizer_kwargs,
             **wrapper_kwargs
         )
-        # TODO possibly extend model vocabulary to include also special audio token
+        if model.config.vocab_size != len(tokenizer):
+            old_vocab_size = model.config.vocab_size
+            model.resize_token_embeddings(len(tokenizer))
+            model.get_input_embeddings().weight.data[old_vocab_size:] = 0.
 
         audio_processor = AudioProcessor(
             sr=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(SR, 16000),
@@ -315,19 +325,12 @@ class SpeechTransformerWrapper(TransformerWrapper):
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
         # TODO make speech embedding more configurable
-        speech_encoder = torch.nn.Sequential(
-            (torch.nn.RMSNorm if isinstance(model, SHARED_STRUCTURE_MODELS) else torch.nn.LayerNorm)(
-                audio_processor.channels,
-                eps=model.config.rms_norm_eps if isinstance(
-                    model, SHARED_STRUCTURE_MODELS
-                ) else model.config.layer_norm_epsilon
-            ),
-            torch.nn.Conv1d(
-                audio_processor.channels,
-                model.config.hidden_size,
-                model.config.hidden_size // audio_processor.channels,
-                stride=model.config.hidden_size // audio_processor.channels
-            )
+        speech_encoder = torch.nn.Conv1d(
+            audio_processor.channels,
+            model.config.hidden_size,
+            model.config.hidden_size // audio_processor.channels,
+            stride=model.config.hidden_size // audio_processor.channels,
+            # dtype=model.base_model.dtype
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -357,6 +360,16 @@ class SpeechTransformerWrapper(TransformerWrapper):
             self.embedding_wrapper.speech_encoder.state_dict(),
             os.path.join(save_directory, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
         )
+
+    def _pre_process_input(self, *args, speech_mask: Optional[torch.BoolTensor] = None, **kwargs):
+        kwargs = super()._pre_process_input(*args, **kwargs)
+        #
+        if speech_mask is None:
+            speech_mask = kwargs[INPUT_IDS] == self.audio_token_id if self.audio_token_id in kwargs[INPUT_IDS] else None
+        #
+        kwargs |= {SPEECH_MASK: speech_mask}
+
+        return kwargs
 
 
 class SpeechLMHeadWrapper(LMHeadWrapper):
@@ -390,20 +403,29 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
             self,
             output_hidden_state: Optional[torch.tensor] = None,
             speech_mask: Optional[torch.BoolTensor] = None,
-            generating: bool = False,
             **kwargs
     ):
         if output_hidden_state is None:
             raise ValueError()
         #
         logits = self.base_module.forward(output_hidden_state)
-        modality_logits = self.modality_switch.forward(output_hidden_state)
-        modality_mask = (modality_logits > 0.0).view(output_hidden_state.size()[:-1])
-        mask = F.pad(speech_mask, (0, 1), value=False)[..., 1:] if speech_mask is not None else modality_mask
-        if mask is not None and torch.any(mask):
+        logits[..., self.super_wrapper.audio_token_id] += self.modality_switch.forward(output_hidden_state).squeeze(-1)
+        #
+        if speech_mask is not None:
+            if False:  # TODO add check for generation
+                modality_mask = torch.cat([
+                    speech_mask[..., 1:], logits[:, -1:].argmax(dim=-1) == self.super_wrapper.audio_token_id
+                ], dim=-1)
+            else:
+                modality_mask = F.pad(speech_mask, (0, 1), value=False)[..., 1:]
+        else:
+            modality_mask = logits.argmax(dim=-1) == self.super_wrapper.audio_token_id
+        # Compute spectrograms where needed
+        if modality_mask is not None and torch.any(modality_mask):
+            output_speech_hidden_state = output_hidden_state[modality_mask]
             spectrograms = [
-                self.speech_decoder(output_hidden_state[mask][s_idx:e_idx].T)
-                for s_idx, e_idx in self._get_spectrogram_splits(mask)
+                self.speech_decoder(output_speech_hidden_state[s_idx:e_idx].T)
+                for s_idx, e_idx in self._get_spectrogram_splits(modality_mask)
             ]
         else:
             spectrograms = None
@@ -412,7 +434,7 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
             self.module_output: {
                 LOGITS: logits,
                 SPECTROGRAMS: spectrograms,
-                MODALITY_LOGITS: modality_logits
+                MODALITY_MASK: modality_mask
             },
             OUT_HIDDEN_STATE: output_hidden_state
         }
@@ -424,10 +446,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[TransformerWrapper] = SpeechTransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = SpeechLMHeadWrapper
 
-    def __init__(
+    def _post_init_operations(
             self,
-            model: PreTrainedModel,
-            tokenizer: PreTrainedTokenizer,
             audio_processor: AudioProcessor,
             speech_encoder: nn.Module,
             speech_decoder: nn.Module,
@@ -435,19 +455,17 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             *args,
             **kwargs
     ):
-        super(PreTrainedModelWrapper).__init__(model, tokenizer, *args, **kwargs)  # TODO fixme
-        super(L.LightningModule).__init__(model, tokenizer, *args, **kwargs)  # TODO fixme
         # Attribute names
-        self._transformer_attr: LMTransformerAttr = self._get_transformer_attr()
-        self._lm_head_attr: LMHeadAttr = self._get_lm_head_attr()
+        self._transformer_attr = self._get_transformer_attr()
+        self._lm_head_attr = self._get_lm_head_attr()
         # Wrappers
-        self._transformer_wrapper: Tuple[TransformerWrapper] = self._transformer_dtype(
+        self._transformer_wrapper = self._transformer_dtype(
             getattr(self.internal_model, self._transformer_attr.value),
             self._tokenizer,
             audio_processor,
             speech_encoder
         ),
-        self._lm_head_wrapper: Tuple[LMHeadWrapper] = self._lm_head_dtype(
+        self._lm_head_wrapper = self._lm_head_dtype(
             getattr(self.internal_model, self._lm_head_attr.value),
             speech_decoder,
             modality_switch,
@@ -455,12 +473,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         ),
 
         # Lightning module parameters for fine-tuning
-        self.optimiser_params: Dict = dict()
-        self.lr_scheduler_params: Dict = dict()
-        self.trainer_params: Dict = dict()
-        self.data_loader_params: Dict = dict()
-        self.metrics: Optional[MetricCollection] = None
-        self._steps_per_epoch: Optional[int] = None
+        self.optimiser_params = dict()
+        self.lr_scheduler_params = dict()
+        self.trainer_params = dict()
+        self.data_loader_params = dict()
+        self.metrics = None
+        self._steps_per_epoch = None
 
     @property
     def audio_processor(self):
@@ -501,7 +519,13 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             tokenizer_kwargs=tokenizer_kwargs,
             **wrapper_kwargs
         )
-        # TODO possibly extend model vocabulary to include also special audio token
+        if model.config.vocab_size != len(tokenizer):
+            old_vocab_size = model.config.vocab_size
+            model.resize_token_embeddings(len(tokenizer))
+            model.get_input_embeddings().weight.data[old_vocab_size:] = 0.
+            model.get_output_embeddings().weight.data[old_vocab_size:] = 0.
+            if model.get_output_embeddings().bias is not None:
+                model.get_output_embeddings().bias.data[old_vocab_size:] = 0.
 
         audio_processor = AudioProcessor(
             sr=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(SR, 16000),
@@ -512,19 +536,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
         # TODO make speech embedding more configurable
-        speech_encoder = torch.nn.Sequential(
-            (torch.nn.RMSNorm if isinstance(model, SHARED_STRUCTURE_MODELS) else torch.nn.LayerNorm)(
-                audio_processor.channels,
-                eps=model.config.rms_norm_eps if isinstance(
-                    model, SHARED_STRUCTURE_MODELS
-                ) else model.config.layer_norm_epsilon
-            ),
-            torch.nn.Conv1d(
-                audio_processor.channels,
-                model.config.hidden_size,
-                model.config.hidden_size // audio_processor.channels,
-                stride=model.config.hidden_size // audio_processor.channels
-            )
+        speech_encoder = torch.nn.Conv1d(
+            audio_processor.channels,
+            model.config.hidden_size,
+            model.config.hidden_size // audio_processor.channels,
+            stride=model.config.hidden_size // audio_processor.channels,
+            # dtype=model.base_model.dtype
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -533,33 +550,26 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE),
                 weights_only=True
             ))
-        speech_decoder = torch.nn.Sequential(
-            (torch.nn.RMSNorm if isinstance(model, SHARED_STRUCTURE_MODELS) else torch.nn.LayerNorm)(
-                audio_processor.channels,
-                eps=model.config.rms_norm_eps if isinstance(
-                    model, SHARED_STRUCTURE_MODELS
-                ) else model.config.layer_norm_epsilon
-            ),
-            torch.nn.ConvTranspose1d(
-                model.config.hidden_size,
-                audio_processor.channels,
-                model.config.hidden_size // audio_processor.channels,
-                stride=model.config.hidden_size // audio_processor.channels
-            )
+        speech_decoder = torch.nn.ConvTranspose1d(
+            model.config.hidden_size,
+            audio_processor.channels,
+            model.config.hidden_size // audio_processor.channels,
+            stride=model.config.hidden_size // audio_processor.channels,
+            dtype=model.base_model.dtype
         )
         if os.path.exists(
-                os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_DECODER_FILE)
+                os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE)
         ):
             speech_decoder.load_state_dict(torch.load(
-                os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_DECODER_FILE),
+                os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE),
                 weights_only=True
             ))
-        modality_switch = torch.nn.Linear(model.config.hidden_size, 1)
+        modality_switch = torch.nn.Linear(model.config.hidden_size, 1, dtype=model.base_model.dtype)
         if os.path.exists(
-                os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.MODALITY_DECODER_FILE)
+                os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
         ):
             modality_switch.load_state_dict(torch.load(
-                os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.MODALITY_DECODER_FILE),
+                os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE),
                 weights_only=True
             ))
 
@@ -593,50 +603,35 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         )
 
     @staticmethod
-    def _spectrogram_generation_loss(spectrograms: List[torch.Tensor], targets: List[torch.Tensor]):
+    def _spectrogram_generation_loss(predicted: List[torch.Tensor], target: List[torch.Tensor]):
         return torch.cat(
-            [(target - spectrogram).norm().view(1) for spectrogram, target in zip(spectrograms, targets)]
+            [(target_ - predicted).norm().view(1) for predicted, target_ in zip(predicted, target)]
         ).mean()
-
-    @staticmethod
-    def _modality_prediction_loss(modality_mask: torch.Tensor, speech_mask: torch.Tensor):
-        return F.binary_cross_entropy_with_logits(modality_mask, speech_mask)
 
     @staticmethod
     def _loss(
             token_logits: torch.Tensor,
             token_labels: torch.Tensor,
-            spectrograms: Optional[List[torch.Tensor]] = None,
+            predicted_spectrograms: Optional[List[torch.Tensor]] = None,
             target_spectrograms: Optional[List[torch.Tensor]] = None,
-            modality_logits: Optional[torch.Tensor] = None,
-            modality_labels: Optional[torch.Tensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
             return_components: bool = True
     ) -> Union[Tuple[torch.Tensor, Dict[str, torch.Tensor]], torch.Tensor]:
         # LM loss
         lm_loss = super()._loss(token_logits, token_labels)
         # Spectrogram generation loss
         spec_loss = SpeechCausalLMWrapper._spectrogram_generation_loss(
-            spectrograms, target_spectrograms
-        ) if spectrograms is not None and target_spectrograms is not None else 0.0
-        # Modality prediction loss
-        modality_loss = SpeechCausalLMWrapper._modality_prediction_loss(
-            modality_logits if attention_mask is None else modality_logits[attention_mask.bool()].view(-1),
-            modality_labels if attention_mask is not None else modality_labels.to(modality_logits)[attention_mask.bool()].view(-1)
-        ) if modality_logits is not None and modality_labels is not None else 0.0
+            predicted_spectrograms, target_spectrograms
+        ) if predicted_spectrograms is not None and target_spectrograms is not None else 0.0
         # Total loss
-        loss = lm_loss + spec_loss + modality_loss
+        loss = lm_loss + spec_loss
 
-        return loss, {
-            LM_LOSS: lm_loss, SPEC_LOSS: spec_loss, MODALITY_LOSS: modality_loss
-        } if return_components else loss
+        return loss, {LM_LOSS: lm_loss, SPEC_LOSS: spec_loss} if return_components else loss
 
     def _post_process_output(
             self,
             base_model_output: bool = False,
             labels: Optional[torch.LongTensor] = None,
-            target_spectrograms: Optional[List[torch.Tensor]] = None,
-            speech_mask: Optional[torch.BoolTensor] = None,
+
             cache: Optional[List[Tuple[torch.FloatTensor, torch.FloatTensor]]] = None,
             hidden_states: Optional[List[torch.FloatTensor]] = None,
             attention_weights: Optional[List[torch.FloatTensor]] = None,
@@ -652,17 +647,19 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 )
             if return_dict:
                 if isinstance(self.internal_model, GPT2PreTrainedModel):
-                    return CausalLMOutputWithCrossAttentions(
+                    return CausalSpeechLMOutputWithCrossAttentions(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output][LOGITS],
+                        spectrograms=kwargs[self.model_output][SPECTROGRAMS],
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
                 elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS):
-                    return CausalLMOutputWithPast(
+                    return CausalSpeechLMOutputWithPast(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output][LOGITS],
+                        spectrograms=kwargs[self.model_output][SPECTROGRAMS],
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
@@ -672,7 +669,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             else:
                 return tuple(
                     v for v in [
-                        kwargs.get(self.lm_loss), kwargs[self.model_output], cache, hidden_states, attention_weights
+                        kwargs.get(self.lm_loss),
+                        kwargs[self.model_output][LOGITS],
+                        kwargs[self.model_output][SPECTROGRAMS],
+                        cache,
+                        hidden_states,
+                        attention_weights
                     ] if v is not None
                 )
         else:
@@ -680,15 +682,18 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             model_output = kwargs.pop(self.model_output)
             logits = model_output.pop(LOGITS)
             spectrograms = model_output.pop(SPECTROGRAMS)
-            modality_logits = model_output.pop(MODALITY_LOGITS)
+            modality_mask = model_output.pop(MODALITY_MASK)
             loss, components = self._loss(
-                logits, labels, spectrograms,
-            ) if labels is not None else None
+                token_logits=logits,
+                token_labels=labels,
+                predicted_spectrograms=spectrograms,
+                target_spectrograms=kwargs.get(INPUT_SPECTROGRAMS)
+            ) if labels is not None else None, None
             #
             kwargs |= {
                 LOGITS: logits,
                 SPECTROGRAMS: spectrograms,
-                MODALITY_LOGITS: modality_logits,
+                MODALITY_MASK: modality_mask,
                 LOSS: {
                     LOSS_VALUE: loss,
                     LOSS_COMPONENTS: components
@@ -704,15 +709,27 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     # Lightning
 
     def prepare_input(
-            self, text: Iterable[str], audio_file_paths: Optional[Iterable[Iterable[str]]] = None
-    ) -> Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]:
+            self,
+            text: Optional[Union[Iterable[str], str]],
+            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None
+    ) -> Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]]:
+        # TODO rework checks on input
+        if isinstance(text, str):
+            return self.prepare_input([text], audio_file_paths=audio_file_paths)
+        #
         if audio_file_paths is not None:
+            #
+            if isinstance(audio_file_paths, str):
+                return self.prepare_input(text, audio_file_paths=[[audio_file_paths]])
+            elif all(isinstance(elem, str) for elem in audio_file_paths):
+                return self.prepare_input(text, audio_file_paths=[audio_file_paths])
+            #
             spectrograms = [
                 [torch.tensor(self.audio_processor.encode(file_path)) for file_path in file_paths]
                 for file_paths in audio_file_paths
             ]
             text = [
-                head + sum(
+                head + str().join(
                     self.audio_token * int(math.ceil(spec.numel() / self.base_model.config.hidden_size)) + split
                     for spec, split in zip(spectrograms_, splits)
                 )
@@ -725,9 +742,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             spectrograms = None
         #
         input_encodings = self.tokenizer(text, return_tensors='pt', padding=True)  # , add_special_tokens=False)
-        speech_mask = input_encodings.input_ids == self.audio_token_id if spectrograms is not None else None
 
-        return input_encodings.data | {INPUT_SPECTROGRAMS: spectrograms, SPEECH_MASK: speech_mask}
+        return input_encodings.data | {INPUT_SPECTROGRAMS: spectrograms}
 
 
     def prepare_output(
@@ -735,79 +751,54 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             text: Optional[Iterable[str]] = None,
             audio_file_paths: Optional[Iterable[Iterable[str]]] = None,
             input_data: Optional[Dict[str, torch.Tensor]] = None
-    ) -> Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]:
+    ) -> Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]]:
         if input_data is None:
-            if audio_file_paths is not None:
-                spectrograms = [
-                    [torch.tensor(self.audio_processor.encode(file_path)) for file_path in file_paths]
-                    for file_paths in audio_file_paths
-                ]
-                text = [
-                    head + sum(
-                        self.audio_token * int(math.ceil(spec.numel() / self.base_model.config.hidden_size)) + split
-                        for spec, split in zip(spectrograms_, splits)
-                    )
-                    for (head, *splits), spectrograms_ in zip(
-                        (text_.split(self.audio_token) for text_ in text), spectrograms
-                    )
-                ]
-                spectrograms = [spec for spectrograms_ in spectrograms for spec in spectrograms_]
-            else:
-                spectrograms = None
-            #
-            input_encodings = self.tokenizer(text, return_tensors='pt', padding=True)  # , add_special_tokens=False)
-            speech_mask = input_encodings.input_ids == self.audio_token_id if spectrograms is not None else None
+            return self.prepare_output(
+                text=text, audio_file_paths=audio_file_paths, input_data=self.prepare_input_data(text, audio_file_paths)
+            )
+        #
+        output_ids = torch.clone(input_data[INPUT_IDS])
+        output_ids[input_data[ATTENTION_MASK] == 0] = -100
 
-            output_ids = input_encodings.input_ids
-            output_ids[~input_encodings.attention_mask.bool()] = -100
-
-            return {TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: spectrograms, MODALITY_LABELS: speech_mask}
-        else:
-            output_ids = torch.clone(input_data[INPUT_IDS])
-            if input_data.get(SPEECH_MASK) is not None:
-                output_ids[~input_data[ATTENTION_MASK].bool() & ~input_data[SPEECH_MASK]] = -100
-
-            return {
-                TOKEN_LABELS: output_ids,
-                TARGET_SPECTROGRAMS: input_data.get(SPECTROGRAMS),
-                MODALITY_LABELS: input_data.get(SPEECH_MASK)
-            }
+        return {
+            TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: input_data.get(INPUT_SPECTROGRAMS)
+        }
 
     def collate(self, samples: Iterable[Dict]) -> Tuple[
-        Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]],
-        Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]
+        Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]],
+        Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]]
     ]:
         input_encodings = self.prepare_input(
             [sample['text'] for sample in samples], [sample['audio_file_paths'] for sample in samples]
         )
-        target_output = self.prepare_output()
+        target_output = self.prepare_output(input_data=input_encodings)
         return input_encodings, target_output
 
-    def _step(
-            self,
-            split: str,
-            mini_batch: Tuple[
-                Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]],
-                Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]
-            ],
-            mini_batch_idx: int
-    ) -> Tuple[Dict, torch.Tensor]:
-        # Unpack the encoding and the target labels
-        input_encodings, labels = mini_batch
-        # Compute output
-        wrapper_output = self.forward(**input_encodings)
-        # Compute LM loss token-wise
-        loss, loss_components = self._loss(
-            token_logits=wrapper_output[LOGITS],
-            spectrograms=wrapper_output[SPECTROGRAMS],
-            modality_logits=wrapper_output[MODALITY_LOGITS],
-            **labels,
-            attention_mask=input_encodings[ATTENTION_MASK]
-        )
-
-        # Log LM loss
-        self.log(f'Loss/{split.capitalize()}', loss)
-        for k, v in loss_components.items():
-            self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
-
-        return wrapper_output, loss
+    # def _step(
+    #         self,
+    #         split: str,
+    #         mini_batch: Tuple[
+    #             Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]],
+    #             Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]
+    #         ],
+    #         mini_batch_idx: int
+    # ) -> Tuple[Dict, torch.Tensor]:
+    #     # Unpack the encoding and the target labels
+    #     input_encodings, labels = mini_batch
+    #     # Compute output
+    #     wrapper_output = self.forward(**input_encodings)
+    #     # Compute LM loss token-wise
+    #     loss, loss_components = self._loss(
+    #         token_logits=wrapper_output[LOGITS],
+    #         spectrograms=wrapper_output[SPECTROGRAMS],
+    #         modality_logits=wrapper_output[MODALITY_LOGITS],
+    #         **labels,
+    #         attention_mask=input_encodings[ATTENTION_MASK]
+    #     )
+    #
+    #     # Log LM loss
+    #     self.log(f'Loss/{split.capitalize()}', loss)
+    #     for k, v in loss_components.items():
+    #         self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
+    #
+    #     return wrapper_output, loss
