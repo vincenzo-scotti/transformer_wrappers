@@ -170,3 +170,5 @@ resources/models/
 # Experiments directories
 experiments/
 !experiments/README.md
+
+transformer_wrappers.code-workspace
