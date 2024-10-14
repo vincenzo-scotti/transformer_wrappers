@@ -213,15 +213,15 @@ class ContextBaseWrapper:
         return kwargs
 
 
-class ContextModuleWrapper(nn.Module, BaseWrapper):
+class ContextModuleWrapper(nn.Module, ContextBaseWrapper):
     _module_name: str = 'module'
     module_output: str = 'module_output'
     module_attr: Optional[Type[AttrEnumTypes]] = None
 
-    def __init__(self, module: nn.Module, super_wrapper: Optional[BaseWrapper] = None):
+    def __init__(self, module: nn.Module, super_wrapper: Optional[ContextBaseWrapper] = None):
         super().__init__()
         self._module: nn.Module = module
-        self._super_wrapper: Optional[Tuple[BaseWrapper]] = super_wrapper,  # NOTE the comma in important
+        self._super_wrapper: Optional[Tuple[ContextBaseWrapper]] = super_wrapper,  # NOTE the comma in important
 
     def __repr__(self):
         return repr(self.base_module)  # TODO fixme
@@ -231,7 +231,7 @@ class ContextModuleWrapper(nn.Module, BaseWrapper):
         return self._module
 
     @property
-    def super_wrapper(self) -> BaseWrapper:
+    def super_wrapper(self) -> ContextBaseWrapper:
         return self._super_wrapper[0]
 
     def _wrapped_forward(self, **kwargs):
@@ -261,7 +261,7 @@ class ContextModuleWrapper(nn.Module, BaseWrapper):
         return output
 
 
-class ContextEmbeddingWrapper(ModuleWrapper):
+class ContextEmbeddingWrapper(ContextModuleWrapper):
     _module_name: str = 'embedding module'
     module_output: str = 'embedding_output'
     module_attr = TransformerEmbeddingAttr
@@ -350,7 +350,7 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
 
-class ContextAttentionWrapper(ModuleWrapper):
+class ContextAttentionWrapper(ContextModuleWrapper):
     _module_name: str = 'attention module'
     module_output: str = ATTN_OUTPUT
     module_attr = LayerAttentionAttr
@@ -568,7 +568,7 @@ class ContextAttentionWrapper(ModuleWrapper):
             return kwargs
 
 
-class FeedForwardWrapper(ModuleWrapper):
+class ContextFeedForwardWrapper(ContextModuleWrapper):
     _module_name: str = 'feed forward module'
     module_output: str = FFNN_OUTPUT
     module_attr = LayerFeedForwardAttr
@@ -716,12 +716,12 @@ class FeedForwardWrapper(ModuleWrapper):
             return kwargs
 
 
-class LayerWrapper(ModuleWrapper):
+class ContextLayerWrapper(ContextModuleWrapper):
     _module_name: str = 'layer module'
     module_output: str = 'layer_output'
 
-    _attention_dtype: Type[ModuleWrapper] = AttentionWrapper
-    _feed_forward_dtype: Type[ModuleWrapper] = FeedForwardWrapper
+    _attention_dtype: Type[ContextModuleWrapper] = ContextAttentionWrapper
+    _feed_forward_dtype: Type[ContextModuleWrapper] = ContextFeedForwardWrapper
 
     intermediate_module_output: str = CURR_INTERMEDIATE_HIDDEN_STATE
 
@@ -799,7 +799,7 @@ class LayerWrapper(ModuleWrapper):
         return self.attention_wrapper.base_module
 
     @property
-    def attention_wrapper(self) -> AttentionWrapper:
+    def attention_wrapper(self) -> ContextAttentionWrapper:
         return self._attention_wrapper[0]
 
     @property
@@ -954,11 +954,11 @@ class LayerWrapper(ModuleWrapper):
         return output
 
 
-class LayersWrapper(ModuleWrapper):
+class ContextLayersWrapper(ContextModuleWrapper):
     _module_name: str = 'layer modules'
     module_output: str = 'layers_output'
 
-    _layer_dtype: Type[ModuleWrapper] = LayerWrapper
+    _layer_dtype: Type[ContextModuleWrapper] = ContextLayerWrapper
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1209,7 +1209,7 @@ class LayersWrapper(ModuleWrapper):
             return kwargs
 
 
-class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
+class ContextPreTrainedModelWrapper(PreTrainedModel, ContextBaseWrapper):
     TASK_SPECIFIC_CONFIGS_KEY: str = 'task_specific_params'
     WRAPPER_CONFIGS_KEY: str = 'wrapper'
 
@@ -1381,15 +1381,15 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         return output
 
 
-class TransformerWrapper(PreTrainedModelWrapper):
+class ContextTransformerWrapper(ContextPreTrainedModelWrapper):
     _model_name: str = 'transformer model'
     model_output: str = 'transformer_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModel
     _auto_peft_model_dtype: Optional[Type[PeftModel]] = AutoPeftModel
 
-    _embedding_dtype: Type[ModuleWrapper] = EmbeddingWrapper
-    _layers_dtype: Type[ModuleWrapper] = LayersWrapper
+    _embedding_dtype: Type[ContextModuleWrapper] = ContextEmbeddingWrapper
+    _layers_dtype: Type[ContextModuleWrapper] = ContextLayersWrapper
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -1659,7 +1659,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
     # TODO implement other PreTrainedModel methods
 
 
-class LMHeadWrapper(ModuleWrapper):
+class ContextLMHeadWrapper(ContextModuleWrapper):
     module_attr = LMHeadAttr
 
     def _wrapped_forward(self, output_hidden_state: Optional[torch.tensor] = None, **kwargs):
@@ -1673,15 +1673,15 @@ class LMHeadWrapper(ModuleWrapper):
         return output
 
 
-class ContextCausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
+class ContextCausalLMWrapper(ContextPreTrainedModelWrapper, L.LightningModule):
     _model_name: str = 'causal language model'
     model_output: str = 'causal_language_model_output'
 
     _auto_model_dtype: Optional[Type[PreTrainedModel]] = AutoModelForCausalLM
     _auto_peft_model_dtype: Optional[Type[PeftModel]] = AutoPeftModelForCausalLM
 
-    _transformer_dtype: Type[TransformerWrapper] = TransformerWrapper
-    _lm_head_dtype: Type[ModuleWrapper] = LMHeadWrapper
+    _transformer_dtype: Type[ContextTransformerWrapper] = ContextTransformerWrapper
+    _lm_head_dtype: Type[ContextModuleWrapper] = ContextLMHeadWrapper
 
     lm_loss: str = 'lm_loss'
 
