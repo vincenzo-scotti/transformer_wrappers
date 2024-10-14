@@ -774,31 +774,30 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         target_output = self.prepare_output(input_data=input_encodings)
         return input_encodings, target_output
 
-    # def _step(
-    #         self,
-    #         split: str,
-    #         mini_batch: Tuple[
-    #             Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]],
-    #             Dict[str, Union[List[torch.Tensor], torch.Tensor, Optional]]
-    #         ],
-    #         mini_batch_idx: int
-    # ) -> Tuple[Dict, torch.Tensor]:
-    #     # Unpack the encoding and the target labels
-    #     input_encodings, labels = mini_batch
-    #     # Compute output
-    #     wrapper_output = self.forward(**input_encodings)
-    #     # Compute LM loss token-wise
-    #     loss, loss_components = self._loss(
-    #         token_logits=wrapper_output[LOGITS],
-    #         spectrograms=wrapper_output[SPECTROGRAMS],
-    #         modality_logits=wrapper_output[MODALITY_LOGITS],
-    #         **labels,
-    #         attention_mask=input_encodings[ATTENTION_MASK]
-    #     )
-    #
-    #     # Log LM loss
-    #     self.log(f'Loss/{split.capitalize()}', loss)
-    #     for k, v in loss_components.items():
-    #         self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
-    #
-    #     return wrapper_output, loss
+    def _step(
+            self,
+            split: str,
+            mini_batch: Tuple[
+                Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]],
+                Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]]
+            ],
+            mini_batch_idx: int
+    ) -> Tuple[Dict, torch.Tensor]:
+        # Unpack the encoding and the target labels
+        input_encodings, target_output = mini_batch
+        # Compute output
+        wrapper_output = self.forward(**input_encodings)
+        # Compute LM loss token-wise
+        loss, loss_components = self._loss(
+            token_logits=wrapper_output[LOGITS],
+            token_labels=target_output[TOKEN_LABELS],
+            predicted_spectrograms=wrapper_output[SPECTROGRAMS],
+            target_spectrograms=target_output[TARGET_SPECTROGRAMS]
+        )
+
+        # Log LM loss
+        self.log(f'Loss/{split.capitalize()}', loss)
+        for k, v in loss_components.items():
+            self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
+
+        return wrapper_output, loss
