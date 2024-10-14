@@ -617,7 +617,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             return_components: bool = True
     ) -> Union[Tuple[torch.Tensor, Dict[str, torch.Tensor]], torch.Tensor]:
         # LM loss
-        lm_loss = super()._loss(token_logits, token_labels)
+        lm_loss = CausalLMWrapper._loss(token_logits, token_labels)
         # Spectrogram generation loss
         spec_loss = SpeechCausalLMWrapper._spectrogram_generation_loss(
             predicted_spectrograms, target_spectrograms
@@ -748,13 +748,13 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
 
     def prepare_output(
             self,
-            text: Optional[Iterable[str]] = None,
-            audio_file_paths: Optional[Iterable[Iterable[str]]] = None,
+            text: Optional[Union[Iterable[str], str]] = None,
+            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None,
             input_data: Optional[Dict[str, torch.Tensor]] = None
     ) -> Dict[str, Optional[Union[List[torch.Tensor], torch.Tensor]]]:
         if input_data is None:
             return self.prepare_output(
-                text=text, audio_file_paths=audio_file_paths, input_data=self.prepare_input_data(text, audio_file_paths)
+                text=text, audio_file_paths=audio_file_paths, input_data=self.prepare_input(text, audio_file_paths)
             )
         #
         output_ids = torch.clone(input_data[INPUT_IDS])
