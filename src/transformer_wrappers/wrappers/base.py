@@ -741,19 +741,30 @@ class LayerWrapper(ModuleWrapper): # TODO: GPTNeoX use_parallel_residual
 
         # GptNEOx dropout
         if self.attention_dropout is not None:
-            attention_output[self.attention_wrapper.module_output] = self.attention_dropout(attention_output[self.attention_wrapper.module_output])
+            attention_output[self.attention_wrapper.module_output] = self.attention_dropout(
+                attention_output[self.attention_wrapper.module_output]
+            )
 
-        if add_attn_residual:
-            current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
+        if isinstance(self.base_module, GPTNeoXLayer) and self.base_module.use_parallel_residual:
+            # TODO find more elegant solution
+            output = kwargs | {
+                CURR_HIDDEN_STATE: residual,
+                self.intermediate_module_output: None,
+                ADD_ATTN_RESIDUAL: add_attn_residual,
+                self.attention_wrapper.module_output: attention_output
+            }
         else:
-            current_hidden_state = attention_output[self.attention_wrapper.module_output]
-        #
-        output = kwargs | {
-            CURR_HIDDEN_STATE: current_hidden_state,
-            self.intermediate_module_output: current_hidden_state,
-            ADD_ATTN_RESIDUAL: add_attn_residual,
-            self.attention_wrapper.module_output: attention_output
-        }
+            if add_attn_residual and not (isinstance(self.base_module, GPTNeoXLayer) and self.base_module):
+                current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
+            else:
+                current_hidden_state = attention_output[self.attention_wrapper.module_output]
+            #
+            output = kwargs | {
+                CURR_HIDDEN_STATE: current_hidden_state,
+                self.intermediate_module_output: current_hidden_state,
+                ADD_ATTN_RESIDUAL: add_attn_residual,
+                self.attention_wrapper.module_output: attention_output
+            }
 
         return output
 
@@ -773,16 +784,37 @@ class LayerWrapper(ModuleWrapper): # TODO: GPTNeoX use_parallel_residual
         if self.feed_forward_dropout is not None:
             ffnn_output[self.feed_forward_wrapper.module_output] = self.feed_forward_dropout(ffnn_output[self.feed_forward_wrapper.module_output])
 
-        if add_ffnn_residual:
-            current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output] + residual  # TODO verify this
+        if isinstance(self.base_module, GPTNeoXLayer) and self.base_module.use_parallel_residual:
+            # TODO find more elegant solution
+            if add_ffnn_residual:
+                current_hidden_state = (
+                        ffnn_output[self.feed_forward_wrapper.module_output] +
+                        kwargs[self.attention_wrapper.module_output][self.attention_wrapper.module_output] +
+                        residual
+                )
+            else:
+                current_hidden_state = (
+                        ffnn_output[self.feed_forward_wrapper.module_output] +
+                        kwargs[self.attention_wrapper.module_output][self.attention_wrapper.module_output]
+                )
+
+            output = kwargs | {
+                CURR_HIDDEN_STATE: current_hidden_state,
+                ADD_FFNN_RESIDUAL: add_ffnn_residual,
+                self.feed_forward_wrapper.module_output: ffnn_output
+            }
+
         else:
-            current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output]
-        # Extend input with module output
-        output = kwargs | {
-            CURR_HIDDEN_STATE: current_hidden_state,
-            ADD_FFNN_RESIDUAL: add_ffnn_residual,
-            self.feed_forward_wrapper.module_output: ffnn_output
-        }
+            if add_ffnn_residual:
+                current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output] + residual  # TODO verify this
+            else:
+                current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output]
+            # Extend input with module output
+            output = kwargs | {
+                CURR_HIDDEN_STATE: current_hidden_state,
+                ADD_FFNN_RESIDUAL: add_ffnn_residual,
+                self.feed_forward_wrapper.module_output: ffnn_output
+            }
 
         return output
 
