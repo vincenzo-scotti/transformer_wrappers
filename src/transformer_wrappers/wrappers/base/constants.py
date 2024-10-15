@@ -74,6 +74,8 @@ RETURN_FFNN_INNER_ACTIVATIONS: str = 'return_feed_forward_inner_activations'
 RETURN_ATTENTION_OUTPUT: str = 'return_attention_output'
 RETURN_FFNN_OUTPUT: str = 'return_feed_forward_output'
 
+BASE_MODEL_OUTPUT: str = 'base_model_output'
+
 BASE_MODEL: str = 'base_model'
 
 ITERATION: str = 'iteration'
