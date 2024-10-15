@@ -366,7 +366,9 @@ class ContextAttentionWrapper(ContextModuleWrapper):
         self._dropout_attr: Optional[AttnDropoutAttr] = self._get_dropout_attr()
     
         # Static context window
-        self.att_len = 4
+        self.att_len = kwargs.get("att_len", None)
+        if self.att_len is None:
+            raise ValueError("Please provide a value for att_len!")
 
         # Init attention mask
         self.attention_mask = None
@@ -1229,9 +1231,10 @@ class ContextPreTrainedModelWrapper(PreTrainedModel, ContextBaseWrapper):
             self,
             model: PreTrainedModel,
             tokenizer: PreTrainedTokenizer,
+            att_len: Optional[int]=None,
             benchmarking: bool = False
     ):
-        super().__init__(model.config)  # TODO fixme (find better solution)
+        super().__init__(model.config, att_len)  # TODO fixme (find better solution)
         #
         self._model: PreTrainedModel = model  # NOTE: the comma is important
         self._tokenizer: PreTrainedTokenizer = tokenizer
@@ -1249,6 +1252,7 @@ class ContextPreTrainedModelWrapper(PreTrainedModel, ContextBaseWrapper):
     def from_pretrained(
             cls,
             pretrained_model_name_or_path: Union[str, os.PathLike],
+            att_len: Optional[int] = None,
             model_args: Optional[Tuple] = None,
             model_kwargs: Optional[Dict] = None,
             quantization_configs: Optional[BitsAndBytesConfig] = None,
@@ -1286,7 +1290,7 @@ class ContextPreTrainedModelWrapper(PreTrainedModel, ContextBaseWrapper):
             tokenizer_name_or_path, *tokenizer_args, **tokenizer_kwargs
         )
 
-        wrapper = cls(model, tokenizer)
+        wrapper = cls(model, tokenizer, att_len=att_len)
 
         if gradient_checkpointing:
             wrapper.gradient_checkpointing_enable()
@@ -1691,10 +1695,10 @@ class ContextCausalLMWrapper(ContextPreTrainedModelWrapper, L.LightningModule):
         self._transformer_attr: LMTransformerAttr = self._get_transformer_attr()
         self._lm_head_attr: LMHeadAttr = self._get_lm_head_attr()
         # Wrappers
-        self._transformer_wrapper: Tuple[TransformerWrapper] = self._transformer_dtype(
+        self._transformer_wrapper: Tuple[ContextTransformerWrapper] = self._transformer_dtype(
             getattr(self.internal_model, self._transformer_attr.value), self._tokenizer
         ),
-        self._lm_head_wrapper: Tuple[LMHeadWrapper] = self._lm_head_dtype(
+        self._lm_head_wrapper: Tuple[ContextLMHeadWrapper] = self._lm_head_dtype(
             getattr(self.internal_model, self._lm_head_attr.value), super_wrapper=self
         ),
 
@@ -1871,9 +1875,10 @@ class ContextCausalLMWrapper(ContextPreTrainedModelWrapper, L.LightningModule):
         else:
             return generate_output
 
-    def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, **kwargs):
+    def prepare_inputs_for_generation(self, *args, base_model_output: bool = True, att_len: int=None, **kwargs):
         #
         inputs = self.internal_model.prepare_inputs_for_generation(*args, **kwargs)
+        inputs |= {"att_len": att_len}
         if self.is_wrapping:
             inputs |= {'base_model_output': base_model_output}
 
