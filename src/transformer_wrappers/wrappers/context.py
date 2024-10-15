@@ -18,6 +18,7 @@ from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
@@ -140,6 +141,92 @@ class ContextAttentionWrapper(AttentionWrapper):
             attn_output = self.base_module.forward(current_hidden_state, **attention_params)
         elif isinstance(self.super_wrapper.base_module, GPT2Block):
             ...
+        elif isinstance(self.super_wrapper.base_module, GPTNeoXLayer):
+            
+            bsz, q_len, _ = current_hidden_state.size()
+            head_mask = kwargs.get('head_mask', None)
+            layer_past = attention_params.get('layer_past', None)
+            use_cache = attention_params.get('use_cache', None)
+            position_ids = attention_params.get('position_ids', None)
+            attention_mask = attention_params.get('attention_mask', None)
+            output_attentions = kwargs.get('output_attentions', None)
+
+            # Apply attention-specific projections and rope
+            query, key, value, present = self.base_module._attn_projections_and_rope(
+                hidden_states=current_hidden_state, position_ids=position_ids, layer_past=layer_past, use_cache=use_cache
+            )
+
+            # Compute attention
+            # q, k, v: [bs, num_attention_heads, seq_len, attn_head_size]
+            # compute causal mask from causal mask buffer
+            batch_size, num_attention_heads, query_length, attn_head_size = query.size()
+            key_length = key.size(-2)
+
+            # dynamically increase the causal mask with the key length, if needed.
+            if key_length > self.base_module.bias.shape[-1]:
+                self.base_module._init_bias(key_length, device=key.device)
+            causal_mask = self.base_module.bias[:, :, key_length - query_length : key_length, :key_length]
+
+            query = query.view(batch_size * num_attention_heads, query_length, attn_head_size)
+            key = key.view(batch_size * num_attention_heads, key_length, attn_head_size)
+            attn_scores = torch.zeros(
+                batch_size * num_attention_heads,
+                query_length,
+                key_length,
+                dtype=query.dtype,
+                device=key.device,
+            )
+            attn_scores = torch.baddbmm(
+                attn_scores,
+                query,
+                key.transpose(1, 2),
+                beta=1.0,
+                alpha=self.base_module.norm_factor,
+            )
+            attn_scores = attn_scores.view(batch_size, num_attention_heads, query_length, key_length)
+
+            mask_value = torch.finfo(attn_scores.dtype).min
+            # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+            # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+            mask_value = torch.tensor(mask_value, dtype=attn_scores.dtype).to(attn_scores.device)
+            attn_scores = torch.where(causal_mask, attn_scores, mask_value)
+
+            if attention_mask is not None:
+                # Apply the attention mask
+                # NOTE: New
+                # Apply length mask
+                # Attention mask is passed as a slice of a preallocated attention mask?
+                # Every modification is directly mapped to the original attention_mask?
+                # No! remembber that there during generation there is another forward pass!
+                if att_len is not None:
+                    coords = torch.arange(q_len * key_length, device=attention_mask.device).reshape(q_len, key_length)
+                    mask = (coords % key_length) + att_len <= (coords // key_length) + (key_length - q_len)
+                    attention_mask[..., mask] = torch.finfo(current_hidden_state.dtype).min
+
+                attn_scores = attn_scores + attention_mask
+
+            attn_weights = nn.functional.softmax(attn_scores, dim=-1)
+            attn_weights = attn_weights.to(value.dtype)
+
+            # Mask heads if we want to
+            if head_mask is not None:
+                attn_weights = attn_weights * head_mask
+
+            attn_weights = self.base_module.attention_dropout(attn_weights)
+
+            attn_output = torch.matmul(attn_weights, value)
+        
+
+            # Reshape outputs
+            attn_output = self.base_module._merge_heads(attn_output, self.base_module.num_attention_heads, self.base_module.head_size)
+            attn_output = self.base_module.dense(attn_output)
+
+            outputs = (attn_output, present)
+            if output_attentions:
+                outputs += (attn_weights,)
+            
+            attn_output = outputs
+
         elif isinstance(self.super_wrapper.base_module, SHARED_STRUCTURE_LAYERS):
             position_ids = attention_params.get("position_ids", None)
             past_key_value = attention_params.get("past_key_value", None)
