@@ -537,9 +537,9 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         # Get valid output maks
         mask = ~target.isnan()
         # Shift predictions to exclude the last element
-        predicted = predicted[mask[..., :-self.speech_conversion_factor]]
+        predicted = predicted[..., :-self.speech_conversion_factor][mask[..., :-self.speech_conversion_factor]]
         # shift targets to exclude the first element
-        target = target[mask[..., :-self.speech_conversion_factor]]
+        target = target[..., self.speech_conversion_factor:][mask[..., self.speech_conversion_factor:]]
         # Compute LM loss token-wise
         loss: torch.Tensor = F.mse_loss(predicted, target)
 
@@ -659,8 +659,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         # Make generation stateful by creating containers for input and output
         generated_spectrograms = list()
         #
-        generate_output = super(PreTrainedModel).generate(
-            *args, generated_spectrograms=generated_spectrograms, **kwargs
+        generate_output = PreTrainedModel.generate(
+            self, *args, generated_spectrograms=generated_spectrograms, **kwargs
         )
         #
         # TODO: handle guided generation vs normal generation case
@@ -710,13 +710,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         if len(spectrograms.size()) == 3:
             return [self.post_process_spectrograms(spec, ids) for spec, ids in zip(spectrograms, token_ids)]
         #
-        mask = torch.repeat_interleave(token_ids == self.audio_token_id, self.speech_conversion_factor)
+        mask = torch.repeat_interleave(token_ids == self.audio_token_id, self.speech_conversion_factor, dim=-1)
         s_idxs, = torch.where(mask & ~ F.pad(mask, (1, 0), value=False)[..., :-1])
         e_idxs, = torch.where(mask & ~ F.pad(mask, (0, 1), value=False)[..., 1:])
-        idxs = (e_idxs + 1 - s_idxs).cumsum(dim=0)
 
         return [
-            spectrograms[:, s_idx:e_idx] for s_idx, e_idx in zip([0] + idxs[:-1].cpu().tolist(), idxs.cpu().tolist())
+            spectrograms[:, s_idx:e_idx] for s_idx, e_idx in zip(s_idxs, e_idxs + 1)
         ]
 
     # Lightning
@@ -770,12 +769,16 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         input_encodings = self.tokenizer(text, return_tensors='pt', padding=True)  # , add_special_tokens=False)
         if spectrograms is not None:
             input_encodings[INPUT_SPECTROGRAMS] = torch.full(
-                (input_encodings.size(0), input_encodings.size(1) * self.speech_conversion_factor),
+                (input_encodings.input_ids.size(0), self.audio_processor.channels, input_encodings.input_ids.size(1) * self.speech_conversion_factor),
                 torch.nan
             )
             input_encodings.input_spectrograms[
-                torch.repeat_interleave(input_encodings.input_ids == self.audio_token_id, self.speech_conversion_factor)
-            ] = torch.hstack([spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms])
+                torch.repeat_interleave(
+                    input_encodings.input_ids == self.audio_token_id,
+                    self.speech_conversion_factor,
+                    dim=-1
+                ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
+            ] = torch.hstack([spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]).ravel()
 
         return input_encodings
 
@@ -785,7 +788,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             text: Optional[Union[Iterable[str], str]] = None,
             audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None,
             input_data: Optional[BatchEncoding] = None
-    ) -> Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]:
+    ) -> Dict[str, Optional[torch.Tensor]]:
         if input_data is None:
             return self.prepare_output(input_data=self.prepare_input(text, audio_file_paths))
         #
@@ -794,44 +797,39 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         if input_data.get(INPUT_SPECTROGRAMS) is not None:
             target_spectrogram = input_data.input_spectrograms.clone()
             target_spectrogram[
-                torch.repeat_interleave(output_ids == self.audio_token_id, self.speech_conversion_factor)
+                ~torch.repeat_interleave(
+                    output_ids == self.audio_token_id, self.speech_conversion_factor, dim=-1
+                ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
             ] = torch.nan
-
-            return output_ids, target_spectrogram
         else:
-            return output_ids
+            target_spectrogram = None
 
-    def collate(self, samples: Iterable[Dict]) -> Tuple[
-        BatchEncoding, Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]
-    ]:
+        return {TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: target_spectrogram}
+
+    def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]]:
         input_encodings = self.prepare_input(
             [sample['text'] for sample in samples],
             [sample.get('audio_file_paths', list()) for sample in samples]
         )
         target_output = self.prepare_output(input_data=input_encodings)
+
         return input_encodings, target_output
 
     def _step(
             self,
             split: str,
-            mini_batch: Tuple[BatchEncoding, Union[Tuple[torch.Tensor, torch.Tensor], torch.Tensor]],
+            mini_batch: Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]],
             mini_batch_idx: int
     ) -> Tuple[Dict, torch.Tensor]:
         # Unpack the encoding and the target labels
-        input_encodings, targets = mini_batch
-        if isinstance(input_encodings, torch.Tensor):
-            token_labels = targets
-            target_spectrograms = None
-        else:
-            token_labels, target_spectrograms = targets
+        input_encodings, target_output = mini_batch
         # Compute output
         wrapper_output = self.forward(**input_encodings)
         # Compute LM loss token-wise
         loss, loss_components = self._loss(
             token_logits=wrapper_output[LOGITS],
-            token_labels=token_labels,
             predicted_spectrograms=wrapper_output[SPECTROGRAMS],
-            target_spectrograms=target_spectrograms
+            **target_output
         )
 
         # Log LM loss
