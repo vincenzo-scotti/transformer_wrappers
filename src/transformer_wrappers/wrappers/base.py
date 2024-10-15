@@ -16,8 +16,9 @@ from torchmetrics import MetricCollection
 
 from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
+from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, GPTNeoXPreTrainedModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
+from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
@@ -72,6 +73,7 @@ SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderL
 class TransformerEmbeddingAttr(Enum):
     EMBED_TOKENS = 'embed_tokens'
     WTE = 'wte'
+    EMBED_IN = 'embed_in'
 
 
 class TransformerPositionEmbeddingAttr(Enum):
@@ -80,6 +82,7 @@ class TransformerPositionEmbeddingAttr(Enum):
 
 class AttnQKVProjectionAttr(Enum):
     C_ATTN = 'c_attn'
+    QUERY_KEY_VALUE = 'query_key_value'
 
 
 class AttnQKVProjectionsAttr(Enum):
@@ -89,15 +92,18 @@ class AttnQKVProjectionsAttr(Enum):
 class AttnOutProjectionAttr(Enum):
     C_PROJ = 'c_proj'
     O_PROJ = 'o_proj'
+    DENSE = 'dense'
 
 
 class AttnDropoutAttr(Enum):
     DROPOUT = 'dropout'
+    ATTENTION_DROPOUT = 'attention_dropout'
 
 
 class FFNNUpProjectionAttr(Enum):
     UP_PROJ = 'up_proj'
     C_FC = 'c_fc'
+    DENSE_H_TO_4H = 'dense_h_to_4h'
 
 
 class FFNNGateProjectionAttr(Enum):
@@ -112,6 +118,7 @@ class FFNNActivationFunctionAttr(Enum):
 class FFNNDownProjectionAttr(Enum):
     DOWN_PROJ = 'down_proj'
     C_PROJ = 'c_proj'
+    DENSE_4H_TO_H = 'dense_4h_to_h'
 
 
 class FFNNDropoutAttr(Enum):
@@ -126,6 +133,11 @@ class LayerInitialNormAttr(Enum):
 class LayerAttentionAttr(Enum):
     SELF_ATTN = 'self_attn'
     ATTN = 'attn'
+    ATTENTION = 'attention'
+
+
+class LayerAttentionDropoutAttr(Enum):
+    POST_ATTENTION_DROPOUT = 'post_attention_dropout'
 
 
 class LayerIntermediateNormAttr(Enum):
@@ -137,6 +149,10 @@ class LayerFeedForwardAttr(Enum):
     MLP = 'mlp'
 
 
+class LayerFeedForwardDropoutAttr(Enum):
+    POST_MLP_DROPUT = 'post_mlp_dropout'
+
+
 class TransformerLayersAttr(Enum):
     LAYERS = 'layers'
     H = 'h'
@@ -145,22 +161,25 @@ class TransformerLayersAttr(Enum):
 class TransformerNormAttr(Enum):
     NORM = 'norm'
     LN_F = 'ln_f'
+    FINAL_LAYER_NORM = 'final_layer_norm'
 
 
 class LMTransformerAttr(Enum):
     MODEL = 'model'
     TRANSFORMER = 'transformer'
+    GPT_NEOX = 'gpt_neox'
     
     
 class LMHeadAttr(Enum):
     LM_HEAD = 'lm_head'
+    EMBED_OUT = 'embed_out'
 
 
 AttrEnumTypes: Type = Union[
     AttnQKVProjectionAttr, AttnOutProjectionAttr, AttnDropoutAttr,
     FFNNGateProjectionAttr, FFNNUpProjectionAttr, FFNNDownProjectionAttr, FFNNActivationFunctionAttr, FFNNDropoutAttr,
-    LayerInitialNormAttr, LayerAttentionAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
-    TransformerEmbeddingAttr, TransformerPositionEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr,
+    LayerInitialNormAttr, LayerAttentionAttr, LayerAttentionDropoutAttr, LayerIntermediateNormAttr, LayerFeedForwardAttr,
+    LayerFeedForwardDropoutAttr, TransformerEmbeddingAttr, TransformerPositionEmbeddingAttr, TransformerLayersAttr, TransformerNormAttr,
     LMTransformerAttr, LMHeadAttr
 ]
 
@@ -360,6 +379,8 @@ class AttentionWrapper(ModuleWrapper):
         }
         if isinstance(self.super_wrapper.super_wrapper.super_wrapper.internal_model, GPT2PreTrainedModel):
             attention_params |= {LAYER_PAST: kwargs[PAST_KEY_VALUES][layer_idx]}
+        elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.internal_model, GPTNeoXPreTrainedModel):
+            attention_params |= {POSITION_IDS: kwargs[POSITION_IDS], LAYER_PAST: kwargs[PAST_KEY_VALUES][layer_idx]}
         elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.internal_model, SHARED_STRUCTURE_MODELS):
             attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUES]}
         else:
@@ -504,12 +525,13 @@ class FeedForwardWrapper(ModuleWrapper):
         if not fine_grained_output:
             up_proj_output = gate_output = inner_activations = None
             ffnn_output = self.base_module.forward(current_hidden_state)
-        elif isinstance(self.super_wrapper.base_module, GPT2Block):
+        elif isinstance(self.super_wrapper.base_module, (GPT2Block, GPTNeoXLayer)):
             up_proj_output = self.up_proj(current_hidden_state)
             gate_output = None
             inner_activations = self.act_fn(up_proj_output)
             ffnn_output = self.down_proj(inner_activations)
-            ffnn_output = self.dropout(ffnn_output)
+            if self.dropout is not None:
+                ffnn_output = self.dropout(ffnn_output)
         elif (
                 isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)) or
                 (isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self.base_module.config.pretraining_tp <= 1)
@@ -580,7 +602,7 @@ class FeedForwardWrapper(ModuleWrapper):
             return kwargs
 
 
-class LayerWrapper(ModuleWrapper):
+class LayerWrapper(ModuleWrapper): # TODO: GPTNeoX use_parallel_residual
     _module_name: str = 'layer module'
     module_output: str = 'layer_output'
 
@@ -596,6 +618,11 @@ class LayerWrapper(ModuleWrapper):
         self._attention_attr: LayerAttentionAttr = self._get_attention_attr()
         self._intermediate_norm_attr: LayerIntermediateNormAttr = self._get_intermediate_norm_attr()
         self._feed_forward_attr: LayerFeedForwardAttr = self._get_feed_forward_attr()
+        
+        # GPTNEOX parameters
+        self._attention_dropout_attr: Optional[LayerAttentionDropoutAttr] = self._get_attention_dropout_attr()
+        self._feed_forward_dropout_attr: Optional[LayerFeedForwardDropoutAttr] = self._get_feed_forward_dropout_attr()
+        
         # Wrappers
         self._attention_wrapper: Tuple = self._attention_dtype(
             getattr(self.base_module, self._attention_attr.value), super_wrapper=self
@@ -647,13 +674,25 @@ class LayerWrapper(ModuleWrapper):
 
     def _get_attention_attr(self) -> LayerAttentionAttr:
         return _get_module_attr_name(self.base_module, LayerAttentionAttr)
+    
+    def _get_attention_dropout_attr(self) -> Optional[LayerAttentionDropoutAttr]:
+        try:
+            return _get_module_attr_name(self.base_module, LayerAttentionDropoutAttr)
+        except ValueError:
+            return None
 
     def _get_intermediate_norm_attr(self) -> LayerIntermediateNormAttr:
         return _get_module_attr_name(self.base_module, LayerIntermediateNormAttr)
 
     def _get_feed_forward_attr(self) -> LayerFeedForwardAttr:
         return _get_module_attr_name(self.base_module, LayerFeedForwardAttr)
-
+    
+    def _get_feed_forward_dropout_attr(self) -> Optional[LayerFeedForwardDropoutAttr]:
+        try:
+            return _get_module_attr_name(self.base_module, LayerFeedForwardDropoutAttr)
+        except ValueError:
+            return None
+            
     @property
     def initial_norm(self) -> nn.Module:
         return getattr(self.base_module, self._initial_norm_attr.value)
@@ -661,6 +700,10 @@ class LayerWrapper(ModuleWrapper):
     @property
     def attention(self):
         return self.attention_wrapper.base_module
+    
+    @property
+    def attention_dropout(self):
+        return getattr(self.base_module, self._attention_dropout_attr.value) if self._attention_dropout_attr is not None else None
 
     @property
     def attention_wrapper(self) -> AttentionWrapper:
@@ -673,6 +716,10 @@ class LayerWrapper(ModuleWrapper):
     @property
     def feed_forward(self):
         return self.feed_forward_wrapper.base_module
+    
+    @property
+    def feed_forward_dropout(self):
+        return getattr(self.base_module, self._feed_forward_dropout_attr.value) if self._feed_forward_dropout_attr is not None else None
 
     @property
     def feed_forward_wrapper(self):
@@ -691,6 +738,11 @@ class LayerWrapper(ModuleWrapper):
         attention_output = self.attention_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.attention_wrapper.module_output)
+
+        # GptNEOx dropout
+        if self.attention_dropout is not None:
+            attention_output[self.attention_wrapper.module_output] = self.attention_dropout(attention_output[self.attention_wrapper.module_output])
+
         if add_attn_residual:
             current_hidden_state = attention_output[self.attention_wrapper.module_output] + residual
         else:
@@ -716,6 +768,11 @@ class LayerWrapper(ModuleWrapper):
         ffnn_output = self.feed_forward_wrapper.forward(
             current_hidden_state=current_hidden_state, **kwargs
         ).pop(self.feed_forward_wrapper.module_output)
+        
+        # GptNEOx dropout
+        if self.feed_forward_dropout is not None:
+            ffnn_output[self.feed_forward_wrapper.module_output] = self.feed_forward_dropout(ffnn_output[self.feed_forward_wrapper.module_output])
+
         if add_ffnn_residual:
             current_hidden_state = ffnn_output[self.feed_forward_wrapper.module_output] + residual  # TODO verify this
         else:
@@ -1006,7 +1063,7 @@ class LayersWrapper(ModuleWrapper):
             # TODO find better solution
             if attention_mask.size()[-2] != kwargs[SEQ_LENGTH] or attention_mask.size()[-1] != kwargs[SEQ_LENGTH]:
                 attention_mask = attention_mask[..., :kwargs[SEQ_LENGTH], :kwargs[SEQ_LENGTH]]
-        elif isinstance(self.super_wrapper.internal_model, MistralPreTrainedModel):
+        elif isinstance(self.super_wrapper.internal_model, (MistralPreTrainedModel, GPTNeoXPreTrainedModel)):
             if valid_mask is not None and self.super_wrapper.internal_model._attn_implementation == 'flash_attention_2' and kwargs[BATCH_SIZE] > 1:
                 if valid_mask[:, -1].sum().item() != kwargs[BATCH_SIZE]:
                     raise ValueError('`padding_side=\'right\'` is not with the Flash Attention version of Mistral')
@@ -1021,13 +1078,24 @@ class LayersWrapper(ModuleWrapper):
                     kwargs[PREFIX_LENGTH],
                 )
             else:
-                attention_mask = _prepare_4d_causal_attention_mask(
-                    valid_mask,
-                    (kwargs[BATCH_SIZE], kwargs[SEQ_LENGTH]),
-                    kwargs[EMBEDDINGS],
-                    kwargs[PREFIX_LENGTH],
-                    sliding_window=self.super_wrapper.internal_model.config.sliding_window,
-                )
+                if isinstance(self.super_wrapper.internal_model, MistralPreTrainedModel):
+                    attention_mask = _prepare_4d_causal_attention_mask(
+                        valid_mask,
+                        (kwargs[BATCH_SIZE], kwargs[SEQ_LENGTH]),
+                        kwargs[EMBEDDINGS],
+                        kwargs[PREFIX_LENGTH],
+                        sliding_window=self.super_wrapper.internal_model.config.sliding_window,
+                    )
+                elif isinstance(self.super_wrapper.internal_model, GPTNeoXPreTrainedModel):
+                    attention_mask = _prepare_4d_causal_attention_mask(
+                        valid_mask,
+                        (kwargs[BATCH_SIZE], kwargs[SEQ_LENGTH]),
+                        kwargs[EMBEDDINGS],
+                        kwargs[PREFIX_LENGTH]
+                    )
+                else:
+                    raise NotImplementedError(f'Unsupported model type: `{type(self.super_wrapper.internal_model)}`.')
+
         else:
             raise NotImplementedError(f'Unsupported model type: `{type(self.super_wrapper.internal_model)}`.')
         #
@@ -1394,15 +1462,15 @@ class TransformerWrapper(PreTrainedModelWrapper):
         # Cache
         if past_key_values is None:
             if use_cache:
-                if isinstance(self.internal_model, GPT2PreTrainedModel):
+                if isinstance(self.internal_model, (GPT2PreTrainedModel, GPTNeoXPreTrainedModel)):
                     past_key_values = [None] * self.config.num_hidden_layers
-                elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS):
+                elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS ):
                     past_key_values = DynamicCache.from_legacy_cache(past_key_values)
                 else:
                     raise NotImplementedError(f'Unsupported model type: `{type(self.internal_model)}`.')
             prefix_length = 0
         else:
-            if isinstance(self.internal_model, GPT2PreTrainedModel) and all(pkv is not None for pkv in past_key_values):
+            if isinstance(self.internal_model, (GPT2PreTrainedModel, GPTNeoXPreTrainedModel)) and all(pkv is not None for pkv in past_key_values):
                 prefix_length = past_key_values[0][0].size(-2)
             elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS):
                 if not isinstance(past_key_values, Cache):
@@ -1416,14 +1484,14 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 cache_position = torch.arange(prefix_length, prefix_length + seq_length, device=device)
         # Positions
         if position_ids is not None:
-            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
                 pass
             elif isinstance(self.internal_model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.internal_model)}`.')
         else:
-            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)
@@ -1675,7 +1743,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
-                elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS):
+                elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS + (GPTNeoXPreTrainedModel,)):
                     return CausalLMOutputWithPast(
                         loss=kwargs.get(self.lm_loss),
                         logits=kwargs[self.model_output],
