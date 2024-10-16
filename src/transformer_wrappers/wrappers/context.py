@@ -144,12 +144,12 @@ class ContextAttentionWrapper(AttentionWrapper):
         elif isinstance(self.super_wrapper.base_module, GPTNeoXLayer):
             
             bsz, q_len, _ = current_hidden_state.size()
-            head_mask = kwargs.get('head_mask', None)
+            head_mask = attention_params.get('head_mask', None)
             layer_past = attention_params.get('layer_past', None)
             use_cache = attention_params.get('use_cache', None)
             position_ids = attention_params.get('position_ids', None)
             attention_mask = attention_params.get('attention_mask', None)
-            output_attentions = kwargs.get('output_attentions', None)
+            output_attentions = attention_params.get('output_attentions', None)
 
             # Apply attention-specific projections and rope
             query, key, value, present = self.base_module._attn_projections_and_rope(
