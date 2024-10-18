@@ -221,6 +221,15 @@ class BackPropTransformerWrapper(TransformerWrapper):
             DETACH_FROM_INTERMEDIATE_STATE, False
         )
 
+    @property
+    def wrapper_args(self):
+        return super().wrapper_args | {
+            LOGITS_LAYER,
+            LOGITS_FROM_INTERMEDIATE_STATE,
+            DETACH_HIDDEN_STATE,
+            DETACH_FROM_INTERMEDIATE_STATE
+        }
+
     def _pre_process_input(
         self,
         *args,

@@ -353,6 +353,17 @@ class ParallelTransformerWrapper(TransformerWrapper):
         self.average: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(AVERAGE, True)
         self.compensate_avg: bool = self.config.task_specific_params[self.WRAPPER_CONFIGS_KEY].get(COMPENSATE_AVG, False)
 
+    @property
+    def wrapper_args(self):
+        return super().wrapper_args |  {
+            P_BLOCKS,
+            P_RATE,
+            BLOCK_PARALLEL,
+            ITERATIVE,
+            AVERAGE,
+            COMPENSATE_AVG
+        }
+
     def _pre_process_input(
             self,
             *args,

@@ -1287,8 +1287,10 @@ class TransformerWrapper(PreTrainedModelWrapper):
     @property
     def wrapper_args(self):
         return {
+            ADD_ATTN_RESIDUAL,
             RETURN_ATTENTION_OUTPUT,
             RETURN_INTERMEDIATE_HIDDEN_STATES,
+            ADD_FFNN_RESIDUAL,
             RETURN_FFNN_UP_PROJ_OUTPUT,
             RETURN_FFNN_GATE_OUTPUT,
             RETURN_FFNN_INNER_ACTIVATIONS,
@@ -1762,28 +1764,28 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             return self._validate_wrapper_kwargs(*args, **kwargs)
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
+        #
         if not self.is_wrapping:
             return self.base_model.generate(*args, **kwargs)
-
+        #
         generate_output = super().generate(*args, **kwargs)
         # Re-run through layers to collect all data  # TODO find better solution
+        return_inner_states |= any(
+            kwargs.get(k, False) for k in [
+                ADD_ATTN_RESIDUAL,
+                RETURN_ATTENTION_OUTPUT,
+                RETURN_INTERMEDIATE_HIDDEN_STATES,
+                ADD_FFNN_RESIDUAL,
+                RETURN_FFNN_UP_PROJ_OUTPUT,
+                RETURN_FFNN_GATE_OUTPUT,
+                RETURN_FFNN_INNER_ACTIVATIONS,
+                RETURN_FFNN_OUTPUT,
+                BASE_MODEL_OUTPUT
+            ]
+        )
         if return_inner_states or not self.is_benchmarking:
             #
-            return self.forward(
-                input_ids=generate_output,
-                **{
-                    k: kwargs.get(k) for k in
-                    set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
-                    if k not in {'args', 'kwargs', 'self', 'base_model_output'}
-                },
-                return_dict=True,
-                output_attentions=True,
-                use_cache=True,
-                output_hidden_states=True,
-                return_attention_output=True,  # Self-attention layer output
-                return_feed_forward_output=True,
-                return_intermediate_hidden_states=True
-            ) | {OUTPUT_IDS: generate_output}
+            return self.forward(input_ids=generate_output, **kwargs) | {OUTPUT_IDS: generate_output}
         else:
             return generate_output
 

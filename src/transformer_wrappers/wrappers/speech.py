@@ -196,6 +196,10 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
 class SpeechTransformerWrapper(TransformerWrapper):
     _embedding_dtype: Type[ModuleWrapper] = SpeechEmbeddingWrapper
 
+    @property
+    def wrapper_args(self):
+        return super().wrapper_args | {INPUT_SPECTROGRAMS, GENERATED_SPECTROGRAMS}
+
     def _post_init_operations(
             self,
             audio_processor: AudioProcessor,
@@ -368,6 +372,22 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
 
         return output
 
+    def _post_process_output(self, *args, generated_spectrograms: Optional[List[torch.Tensor]] = None, **kwargs):
+        #
+        output = super()._post_process_output(*args, **kwargs)
+        #
+        if generated_spectrograms is not None:
+            if len(generated_spectrograms) > 0:
+                generated_spectrograms.append(output[self.module_output][SPECTROGRAMS])
+            else:
+                generated_spectrograms.extend([
+                    kwargs.get(INPUT_SPECTROGRAMS, torch.full_like(output[self.module_output][SPECTROGRAMS], torch.nan)),
+                    output[self.module_output][SPECTROGRAMS][..., -self.super_wrapper.speech_conversion_factor:]
+                ])
+        #
+        output |= {GENERATED_SPECTROGRAMS: generated_spectrograms}
+
+        return output
 
 class SpeechCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[TransformerWrapper] = SpeechTransformerWrapper
@@ -572,7 +592,6 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             hidden_states: Optional[List[torch.FloatTensor]] = None,
             attention_weights: Optional[List[torch.FloatTensor]] = None,
             return_dict: bool = True,
-            generated_spectrograms: Optional[List[torch.Tensor]] = None,
             guided_generation: bool = False,
             **kwargs
     ):
@@ -618,16 +637,6 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             model_output = kwargs.pop(self.model_output)
             logits = model_output.pop(LOGITS)
             spectrograms = model_output.pop(SPECTROGRAMS)
-            #
-            if generated_spectrograms is not None:
-                if len(generated_spectrograms) > 0:
-                    generated_spectrograms.append(spectrograms)
-                else:
-                    generated_spectrograms = [
-                        kwargs.get(INPUT_SPECTROGRAMS, torch.full_like(spectrograms, torch.nan)),
-                        spectrograms[..., -self.speech_conversion_factor:]
-                    ]
-
             # Compute loss
             loss, components = self._loss(
                 token_logits=logits,
@@ -646,43 +655,37 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 CACHE: cache,
                 HIDDEN_STATES: hidden_states,
                 ATTN_WEIGHTS: attention_weights,
-                RETURN_DICT: return_dict,
-                GENERATED_SPECTROGRAMS: generated_spectrograms
+                RETURN_DICT: return_dict
             }
 
             return kwargs
 
     def generate(self, *args, return_inner_states: bool = False, **kwargs):
-        # NOTE: this generate won't work with multi-sequence approaches like beam-search
+        #
         if not self.is_wrapping:
             return self.base_model.generate(*args, **kwargs)
-        # Make generation stateful by creating containers for input and output
+        #
         generated_spectrograms = list()
-        #
-        generate_output = PreTrainedModel.generate(
-            self, *args, generated_spectrograms=generated_spectrograms, **kwargs
-        )
-        #
-        # TODO: handle guided generation vs normal generation case
-        generated_spectrograms = torch.cat(generated_spectrograms, dim=1)
+        generate_output = PreTrainedModel.generate(self, *args, generated_spectrograms=generated_spectrograms, **kwargs)
+        generated_spectrograms = torch.cat(generated_spectrograms, dim=-1)
         # Re-run through layers to collect all data  # TODO find better solution
+        return_inner_states |= any(
+            kwargs.get(k, False) for k in [
+                ADD_ATTN_RESIDUAL,
+                RETURN_ATTENTION_OUTPUT,
+                RETURN_INTERMEDIATE_HIDDEN_STATES,
+                ADD_FFNN_RESIDUAL,
+                RETURN_FFNN_UP_PROJ_OUTPUT,
+                RETURN_FFNN_GATE_OUTPUT,
+                RETURN_FFNN_INNER_ACTIVATIONS,
+                RETURN_FFNN_OUTPUT,
+                BASE_MODEL_OUTPUT
+            ]
+        )
         if return_inner_states or not self.is_benchmarking:
             #
             return self.forward(
-                input_ids=generate_output,
-                input_spectrograms=generated_spectrograms,
-                **{
-                    k: kwargs.get(k) for k in
-                    set(inspect.signature(self.prepare_inputs_for_generation).parameters.keys())
-                    if k not in {'args', 'kwargs', 'self', 'base_model_output'}
-                },
-                return_dict=True,
-                output_attentions=True,
-                use_cache=True,
-                output_hidden_states=True,
-                return_attention_output=True,  # Self-attention layer output
-                return_feed_forward_output=True,
-                return_intermediate_hidden_states=True
+                input_ids=generate_output, input_spectrograms=generated_spectrograms, **kwargs
             ) | {OUTPUT_IDS: generate_output, OUTPUT_SPECTROGRAMS: generated_spectrograms}
         else:
             return generate_output, generated_spectrograms
