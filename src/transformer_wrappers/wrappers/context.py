@@ -140,7 +140,110 @@ class ContextAttentionWrapper(AttentionWrapper):
         if not fine_grained_output:
             attn_output = self.base_module.forward(current_hidden_state, **attention_params)
         elif isinstance(self.super_wrapper.base_module, GPT2Block):
-            ...
+            bsz, q_len, _ = current_hidden_state.size()
+            attention_mask = attention_params.get('attention_mask', None)
+            head_mask = attention_params.get('head_mask', None)
+            encoder_hidden_states = attention_params.get('encoder_hidden_states', None)
+            layer_past = attention_params.get('layer_past', None)
+            use_cache = attention_params.get('use_cache', None)
+            encoder_attention_mask = attention_params.get('encoder_attention_mask', None)
+            output_attentions = attention_params.get('output_attentions', None)
+
+            
+            if encoder_hidden_states is not None:
+                if not hasattr(self, "q_attn"):
+                    raise ValueError(
+                        "If class is used as cross attention, the weights `q_attn` have to be defined. "
+                        "Please make sure to instantiate class with `GPT2Attention(..., is_cross_attention=True)`."
+                    )
+
+                query = self.base_module.q_attn(current_hidden_state)
+                key, value = self.base_module.c_attn(encoder_hidden_states).split(self.base_module.split_size, dim=2)
+                attention_mask = encoder_attention_mask
+            else:
+                query, key, value = self.base_module.c_attn(current_hidden_state).split(self.base_module.split_size, dim=2)
+
+            query = self.base_module._split_heads(query, self.base_module.num_heads, self.base_module.head_dim)
+            key = self.base_module._split_heads(key, self.base_module.num_heads, self.base_module.head_dim)
+            value = self.base_module._split_heads(value, self.base_module.num_heads, self.base_module.head_dim)
+
+            if layer_past is not None:
+                past_key, past_value = layer_past
+                key = torch.cat((past_key, key), dim=-2)
+                value = torch.cat((past_value, value), dim=-2)
+
+            if use_cache is True:
+                present = (key, value)
+            else:
+                present = None
+
+            if self.base_module.reorder_and_upcast_attn:
+                attn_output, attn_weights = self.base_module._upcast_and_reordered_attn(query, key, value, attention_mask, head_mask)
+            else:
+                # New
+                # reimplementing only this attention forward since reorder_and_upcast_attn is usually false  (gdm), 
+                attn_output, attn_weights = self.base_module._attn(query, key, value, attention_mask, head_mask)
+                
+                attn_weights = torch.matmul(query, key.transpose(-1, -2))
+
+                if self.base_module.scale_attn_weights:
+                    attn_weights = attn_weights / torch.full(
+                        [], value.size(-1) ** 0.5, dtype=attn_weights.dtype, device=attn_weights.device
+                    )
+
+                # Layer-wise attention scaling
+                if self.base_module.scale_attn_by_inverse_layer_idx:
+                    attn_weights = attn_weights / float(self.base_module.layer_idx + 1)
+
+                if not self.base_module.is_cross_attention:
+                    # if only "normal" attention layer implements causal mask
+                    query_length, key_length = query.size(-2), key.size(-2)
+                    causal_mask = self.base_module.bias[:, :, key_length - query_length : key_length, :key_length]
+                    mask_value = torch.finfo(attn_weights.dtype).min
+                    # Need to be a tensor, otherwise we get error: `RuntimeError: expected scalar type float but found double`.
+                    # Need to be on the same device, otherwise `RuntimeError: ..., x and y to be on the same device`
+                    mask_value = torch.full([], mask_value, dtype=attn_weights.dtype, device=attn_weights.device)
+                    attn_weights = torch.where(causal_mask, attn_weights.to(attn_weights.dtype), mask_value)
+
+                if attention_mask is not None:
+                    # Apply the attention mask
+                    # NOTE: New
+                    # Apply length mask
+                    if att_len is not None:
+                        coords = torch.arange(q_len * key_length, device=attention_mask.device).reshape(q_len, key_length)
+                        mask = (coords % key_length) + att_len <= (coords // key_length) + (key_length - q_len)
+                        # TODO 
+                        attention_mask = attention_mask.expand((bsz, self.base_module.num_heads, q_len, q_len))
+                        attention_mask[..., mask] = torch.finfo(current_hidden_state.dtype).min
+                    attn_weights = attn_weights + attention_mask
+                elif  att_len is not None and (attention_mask is None or attention_mask.numel()==1):
+                    # During generation
+                    attn_weights[..., :-att_len] = torch.finfo(current_hidden_state.dtype).min
+                else:
+                    raise ValueError("Wrong attention_maks, bitch!")
+
+                attn_weights = nn.functional.softmax(attn_weights, dim=-1)
+
+                # Downcast (if necessary) back to V's dtype (if in mixed-precision) -- No-Op otherwise
+                attn_weights = attn_weights.type(value.dtype)
+                attn_weights = self.base_module.attn_dropout(attn_weights)
+
+                # Mask heads if we want to
+                if head_mask is not None:
+                    attn_weights = attn_weights * head_mask
+
+                attn_output = torch.matmul(attn_weights, value)
+
+            attn_output = self.base_module._merge_heads(attn_output, self.base_module.num_heads, self.base_module.head_dim)
+            attn_output = self.base_module.c_proj(attn_output)
+            attn_output = self.base_module.resid_dropout(attn_output)
+
+            outputs = (attn_output, present)
+            if output_attentions:
+                outputs += (attn_weights,)
+            
+            attn_output = outputs
+
         elif isinstance(self.super_wrapper.base_module, GPTNeoXLayer):
             
             bsz, q_len, _ = current_hidden_state.size()
