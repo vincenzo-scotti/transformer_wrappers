@@ -16,12 +16,13 @@ from torchmetrics import MetricCollection
 
 from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, GPTNeoXPreTrainedModel
+from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, GPTNeoXPreTrainedModel, Gemma2PreTrainedModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+from transformers.models.gemma2.modeling_gemma2 import Gemma2DecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
@@ -66,8 +67,10 @@ __all__ = [
 logger = hf_logging.get_logger(__name__)
 
 
-SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
-SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
+#SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
+#SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
+SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, Gemma2PreTrainedModel)
+SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer, Gemma2DecoderLayer)
 
 
 class TransformerEmbeddingAttr(Enum):
@@ -1088,7 +1091,7 @@ class LayersWrapper(ModuleWrapper):
                 attention_mask = (1.0 - attention_mask) * torch.finfo(kwargs[DTYPE]).min
             else:
                 attention_mask = None
-        elif isinstance(self.super_wrapper.internal_model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
+        elif isinstance(self.super_wrapper.internal_model, (GemmaPreTrainedModel,  Gemma2PreTrainedModel, LlamaPreTrainedModel)):
             attention_mask = self.super_wrapper.internal_model._update_causal_mask(
                 valid_mask, kwargs[EMBEDDINGS], kwargs[CACHE_POSITION], kwargs[PAST_KEY_VALUES], kwargs[OUTPUT_ATTENTIONS]
             )
@@ -1512,18 +1515,18 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.internal_model)}`.')
         if cache_position is None:
             # TODO check back this part for corner case when sequence is longer that max len
-            if isinstance(self.internal_model, (GemmaPreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.internal_model, (GemmaPreTrainedModel, Gemma2PreTrainedModel, LlamaPreTrainedModel)):
                 cache_position = torch.arange(prefix_length, prefix_length + seq_length, device=device)
         # Positions
         if position_ids is not None:
-            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
+            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, Gemma2PreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
                 pass
             elif isinstance(self.internal_model, MistralPreTrainedModel):
                 position_ids = position_ids.view(-1, seq_length).long()
             else:
                 raise NotImplementedError(f'Unsupported model type: `{type(self.internal_model)}`.')
         else:
-            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
+            if isinstance(self.internal_model, (GPT2PreTrainedModel, GemmaPreTrainedModel, Gemma2PreTrainedModel, LlamaPreTrainedModel, GPTNeoXPreTrainedModel)):
                 position_ids = torch.arange(
                     prefix_length, prefix_length + seq_length, dtype=torch.long, device=device
                 ).unsqueeze(0)

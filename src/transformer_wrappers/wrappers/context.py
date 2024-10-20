@@ -16,12 +16,13 @@ from torchmetrics import MetricCollection
 
 from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
-from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel
+from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, Gemma2PreTrainedModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
 from transformers.models.gpt_neox.modeling_gpt_neox import GPTNeoXLayer
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer
 from transformers.models.gemma.modeling_gemma import GemmaDecoderLayer
+from transformers.models.gemma2.modeling_gemma2 import Gemma2DecoderLayer
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.modeling_outputs import BaseModelOutputWithPast, BaseModelOutputWithPastAndCrossAttentions
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
@@ -70,8 +71,8 @@ __all__ = [
 logger = hf_logging.get_logger(__name__)
 
 
-SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
-SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
+SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, Gemma2PreTrainedModel)
+SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer, Gemma2DecoderLayer)
 
 
 # Copied from transformers.models.llama.modeling_llama.rotate_half
@@ -182,8 +183,7 @@ class ContextAttentionWrapper(AttentionWrapper):
             else:
                 # New
                 # reimplementing only this attention forward since reorder_and_upcast_attn is usually false  (gdm), 
-                attn_output, attn_weights = self.base_module._attn(query, key, value, attention_mask, head_mask)
-                
+                                
                 attn_weights = torch.matmul(query, key.transpose(-1, -2))
 
                 if self.base_module.scale_attn_weights:
