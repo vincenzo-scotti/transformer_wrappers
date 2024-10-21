@@ -212,13 +212,21 @@ class ContextAttentionWrapper(AttentionWrapper):
                     if att_len is not None:
                         coords = torch.arange(q_len * key_length, device=attention_mask.device).reshape(q_len, key_length)
                         mask = (coords % key_length) + att_len <= (coords // key_length) + (key_length - q_len)
-                        # TODO 
-                        attention_mask = attention_mask.expand((bsz, self.base_module.num_heads, q_len, q_len))
-                        attention_mask[..., mask] = torch.finfo(current_hidden_state.dtype).min
+                        # TODO: fix epanding tensor
+                        #attention_mask = attention_mask.expand((bsz, self.base_module.num_heads, q_len, q_len))
+                        attention_mask[..., :-att_len] = torch.finfo(current_hidden_state.dtype).min
                     attn_weights = attn_weights + attention_mask
                 elif  att_len is not None and (attention_mask is None or attention_mask.numel()==1):
                     # During generation
-                    attn_weights[..., :-att_len] = torch.finfo(current_hidden_state.dtype).min
+                    #attention_mask[..., :-att_len] = torch.finfo(current_hidden_state.dtype).min
+                    if attn_weights.shape[2] ==1:
+                        attn_weights[..., :-att_len] = torch.finfo(current_hidden_state.dtype).min
+                    else:
+                        coords = torch.arange(q_len * key_length, device=attn_weights.device).reshape(q_len, key_length)
+                        mask = (coords % key_length) + att_len <= (coords // key_length) + (key_length - q_len)
+                        local_attention_mask = torch.zeros(attn_weights.shape).to(attn_weights.device)
+                        local_attention_mask[..., mask] = torch.finfo(current_hidden_state.dtype).min
+                        attn_weights = attn_weights + local_attention_mask
                 else:
                     raise ValueError("Wrong attention_maks, bitch!")
 
