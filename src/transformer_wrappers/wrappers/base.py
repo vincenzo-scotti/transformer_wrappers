@@ -314,7 +314,7 @@ class EmbeddingWrapper(ModuleWrapper):
         embeddings = kwargs.pop(self.module_output)
         if isinstance(self.super_wrapper.internal_model, GPT2PreTrainedModel):
             embeddings += self.position_embeddings.forward(kwargs[POSITION_IDS])
-        elif isinstance(self.super_wrapper.internal_model, GemmaPreTrainedModel):
+        elif isinstance(self.super_wrapper.internal_model, (GemmaPreTrainedModel, Gemma2PreTrainedModel)):
             embeddings *= embeddings.size(-1) ** 0.5
         if base_model_output:
             return embeddings
@@ -536,7 +536,7 @@ class FeedForwardWrapper(ModuleWrapper):
             if self.dropout is not None:
                 ffnn_output = self.dropout(ffnn_output)
         elif (
-                isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer)) or
+                isinstance(self.super_wrapper.base_module, (MistralDecoderLayer, GemmaDecoderLayer, Gemma2DecoderLayer)) or
                 (isinstance(self.super_wrapper.base_module, LlamaDecoderLayer) and self.base_module.config.pretraining_tp <= 1)
         ):
             up_proj_output = self.up_proj(current_hidden_state)
