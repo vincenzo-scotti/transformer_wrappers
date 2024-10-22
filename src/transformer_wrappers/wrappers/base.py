@@ -1639,6 +1639,10 @@ class LMHeadWrapper(ModuleWrapper):
 
         return output
 
+    @property
+    def weight(self):
+        return self.base_module.weight
+
 
 class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     _model_name: str = 'causal language model'
