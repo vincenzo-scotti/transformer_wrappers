@@ -104,7 +104,7 @@ REC_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}are pairs{{% else %}}is a pair{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}are gropus{{% else %}}is a pair{{% endif %}}'
               f'{{% endif %}} '
-              f'of {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'of {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'and {{% if samples | length > 1 %}}their{{% else %}}its{{% endif %}} corresponding langauage{{% if samples | length > 1 %}}s{{% endif %}} being spoken.'
               for source in ['audio clip{% if samples | length > 1 %}s{% endif %}', 'audio',
                              'recording{% if samples | length > 1 %}s{% endif %}']
@@ -165,7 +165,7 @@ REC_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}sono coppie{{% else %}}è una coppia{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}sono gruppi{{% else %}}è una coppia{{% endif %}}'
               f'{{% endif %}} '
-              f'di {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'di {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'con {{% if samples | length > 1 %}}le loro{{% else %}}la sua{{% endif %}} corrispondent{{% if samples | length > 1 %}}i{{% else %}}e{{% endif %}} lingu{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}} corrisppondent{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}}.'
               for source in
               ['audio', 'clip audio', 'registrazion{% if samples | length > 1 %}i{% else %}e{% endif %}']
@@ -173,7 +173,7 @@ REC_INSTRUCTIONS: Dict[str, List[str]] = {
 }
 ASR_INSTRUCTIONS: Dict[str, List[str]] = {
     'en': [
-              f'{command} the{" following" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} the{" following" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Transcribe'],
             [True, False],
@@ -187,13 +187,13 @@ ASR_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}are pairs{{% else %}}is a pair{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}are gropus{{% else %}}is a pair{{% endif %}}'
               f'{{% endif %}} '
-              f'of {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'of {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'and {{% if samples | length > 1 %}}their{{% else %}}its{{% endif %}} transcription{{% if samples | length > 1 %}}s{{% endif %}}.'
               for source in ['audio clip{% if samples | length > 1 %}s{% endif %}', 'audio',
                              'recording{% if samples | length > 1 %}s{% endif %}']
           ],
     'it': [
-              f'{command} l{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} l{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Trascrivi'],
             [True, False],
@@ -201,7 +201,7 @@ ASR_INSTRUCTIONS: Dict[str, List[str]] = {
             ['.']
         )
           ] + [
-              f'{command} {{% if samples | length > 1 %}}i{{% else %}}il{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} {{% if samples | length > 1 %}}i{{% else %}}il{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Trascrivi'],
             [True, False],
@@ -214,7 +214,7 @@ ASR_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}sono coppie{{% else %}}è una coppia{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}sono gruppi{{% else %}}è una coppia{{% endif %}}'
               f'{{% endif %}} '
-              f'di {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'di {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'con {{% if samples | length > 1 %}}le loro{{% else %}}la sua{{% endif %}} trascrizion{{% if samples | length > 1 %}}i{{% else %}}e{{% endif %}}.'
               for source in
               ['audio', 'clip audio', 'registrazion{% if samples | length > 1 %}i{% else %}e{% endif %}']
@@ -222,7 +222,7 @@ ASR_INSTRUCTIONS: Dict[str, List[str]] = {
 }
 TTS_INSTRUCTIONS: Dict[str, List[str]] = {
     'en': [
-              f'{command} the{" following" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} the{" following" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Utter', 'Read'],
             [True, False],
@@ -236,7 +236,7 @@ TTS_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}are pairs{{% else %}}is a pair{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}are gropus{{% else %}}is a pair{{% endif %}}'
               f'{{% endif %}} '
-              f'of {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'of {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'and {{% if samples | length > 1 %}}their{{% else %}}its{{% endif %}} corresponding {target}.'
               for source, target in product(
             ['sentence{% if samples | length > 1 %}s{% endif %}',
@@ -246,7 +246,7 @@ TTS_INSTRUCTIONS: Dict[str, List[str]] = {
         )
           ],
     'it': [
-              f'{command} l{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} l{{% if samples | length > 1 %}}e{{% else %}}a{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Trascrivi'],
             [True, False],
@@ -254,7 +254,7 @@ TTS_INSTRUCTIONS: Dict[str, List[str]] = {
             ['.']
         )
           ] + [
-              f'{command} {{% if samples | length > 1 %}}i{{% else %}}il{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
+              f'{command} {{% if samples | length > 1 %}}i{{% else %}}il{{% endif %}}{" seguent{% if samples | length > 1 %}i{% else %}e{% endif %}" if following else ""} {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{ {{ languages | getitem(sample.language) }} }}{{% endif %}}{eos}'
               for command, following, source, eos in product(
             ['Pronuncia', 'Leggi'],
             [True, False],
@@ -267,7 +267,7 @@ TTS_INSTRUCTIONS: Dict[str, List[str]] = {
               f'{{% if samples | length > 1 %}}sono coppie{{% else %}}è una coppia{{% endif %}}'
               f'{{% else %}}{{% if samples | length > 1 %}}sono gruppi{{% else %}}è una coppia{{% endif %}}'
               f'{{% endif %}} '
-              f'di {source}{{% if info and all(sample.language == (samples | first).language for sample in samples) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
+              f'di {source}{{% if info and not (samples | selectattr("language", "ne", (samples | first).language) | list) %}} in {{{{ languages | getitem(sample.language) }}}}{{% endif %}} '
               f'e {{% if samples | length > 1 %}}le loro{{% else %}}la sua{{% endif %}} corrispondent{{% if samples | length > 1 %}}i{{% else %}}e{{% endif %}} {target}.'
               for source, target in product(
             ['test{% if samples | length > 1 %}i{% else %}o{% endif %}',
@@ -334,7 +334,7 @@ LANGUAGE_INFO_PREFIX: Dict[str, List[str]] = {
 }
 LANGUAGE_INFO_FORMAT: Dict[str, List[str]] = {
     lang_id: [
-        f' {{% if info and any(sample.language != (samples | first).language for sample in samples) %}}{l_par}{prefix}{language_format}{r_par}{{% endif %}}'
+        f' {{% if info and (samples | selectattr("language", "ne", (samples | first).language) | list) %}}{l_par}{prefix}{language_format}{r_par}{{% endif %}}'
         for (l_par, r_par), prefix, language_format in product(
             [('(', ')'), ('[', ']')], LANGUAGE_INFO_PREFIX[lang_id], LANGUAGE_FORMAT
         )
@@ -378,6 +378,7 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
     def __init__(
             self,
             tokenizer: PreTrainedTokenizer,
+            audio_token: str,
             *args,
             task_proportions: Optional[Dict[str, float]] = None,
             voices_mixing_proportions: Union[Dict[str, float], float] = 0.5,
@@ -395,6 +396,7 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
             voices_mixing_proportions = dict(zip(self._tasks, (voices_mixing_proportions,) * len(self._tasks)))
         #
         self.tokenizer: PreTrainedTokenizer = tokenizer
+        self.audio_token: str = audio_token
         self.task_proportions: Dict[str, float] = task_proportions
         self.voices_mixing_proportions: Dict[str, float] = voices_mixing_proportions
         self.max_samples_per_task: int = max_samples_per_task
@@ -458,7 +460,7 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
                 random.choice(['paired', 'split']),
                 random.choice(['true', 'false']),
                 random.choice(['true', 'false']),
-                random.choice(REC_INSTRUCTIONS[lang_id]),
+                random.choice(ASR_INSTRUCTIONS[lang_id]),
                 random.choice(SAMPLE_START),
                 random.choice(SAMPLES_SEP),
                 random.choice(SAMPLE_IO_SEP),
@@ -496,7 +498,7 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
                 random.choice(['paired', 'split']),
                 random.choice(['true', 'false']),
                 random.choice(['true', 'false']),
-                random.choice(REC_INSTRUCTIONS[lang_id]),
+                random.choice(TTS_INSTRUCTIONS[lang_id]),
                 random.choice(SAMPLE_START),
                 random.choice(SAMPLES_SEP),
                 random.choice(SAMPLE_IO_SEP),
@@ -577,17 +579,16 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
         task, *_ = samples['task'].unique()
         template = self._get_random_template(task, lang_id)
 
-        try:
-            sample = {
-                'text': template.render(
-                    samples=[sample.to_dict() for sample in samples],
-                    languages=self._languages_dict[lang_id],
-                    tokenizer=self.tokenizer
-                ),
-                'audio_file_paths': [os.path.join(sample['base_path'], 'clips', sample['path']) for sample in samples]
-            }
-        except:
-            print(repr(template))
-            sample = None
+        sample = {
+            'text': template.render(
+                samples=[sample.to_dict() for _, sample in samples.iterrows()],
+                languages=self._languages_dict[lang_id],
+                tokenizer=self.tokenizer,
+                audio_token=self.audio_token
+            ),
+            'audio_file_paths': [
+                os.path.join(sample['base_path'], 'clips', sample['path']) for _, sample in samples.iterrows()
+            ]
+        }
 
         return sample
