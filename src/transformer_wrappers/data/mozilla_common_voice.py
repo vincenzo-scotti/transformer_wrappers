@@ -308,9 +308,9 @@ AUDIO_START: Dict[str, List[str]] = {
 AUDIO_FORMAT: Dict[str, List[str]] = {
     'en': [
         (
-            '{0}{1}' +
-            '{{% if (numbered or approach == "split") and (samples | length) > 1 %}}_{{{{ loop.index }}}}' if len(data) > 0 else '' +
-            '{{% endif %}}{2}{{{{ audio_token }}}}{2}{0}'
+            '{0}' +
+            ('{1}{{% if (numbered or approach == "split") and (samples | length) > 1 %}}_{{{{ loop.index }}}}{{% endif %}}' if len(data) > 0 else '') +
+            '{2}{{{{ audio_token }}}}{2}{0}'
         ).format(
             boundary, data, "\n" if len(boundary) > 1 else ""
         )
@@ -325,9 +325,10 @@ AUDIO_FORMAT: Dict[str, List[str]] = {
     ],
     'it': [
         (
-            '{0}{1}' +
-            '{{% if (numbered or approach == "split") and (samples | length) > 1 %}}_{{{{ loop.index }}}}{{% endif %}}' if len(data) > 0 else '' +
-            '{2}{{{{ audio_token }}}}{2}{0}').format(
+            '{0}' +
+            ('{1}{{% if (numbered or approach == "split") and (samples | length) > 1 %}}_{{{{ loop.index }}}}{{% endif %}}' if len(data) > 0 else '') +
+            '{2}{{{{ audio_token }}}}{2}{0}'
+        ).format(
             boundary, data, "\n" if len(boundary) > 1 else ""
         )
         for boundary, data in [
