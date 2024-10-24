@@ -3,13 +3,15 @@ from itertools import product
 import random
 from jinja2 import Environment, Template
 
+import numpy as np
 import pandas as pd
+from sklearn.model_selection import GroupShuffleSplit
 
 from torch.utils.data import Dataset
 
 from transformers import PreTrainedTokenizer
 
-from typing import Optional, Dict, List, Union, Iterable, Set, Tuple, Literal
+from typing import Optional, Dict, List, Union, Iterable, Tuple, Literal
 
 
 __all__ = ['MozillaCommonVoice', 'ProcessedMozillaCommonVoice']
@@ -18,7 +20,7 @@ __all__ = ['MozillaCommonVoice', 'ProcessedMozillaCommonVoice']
 class MozillaCommonVoice(Dataset):
     _split_mapping: Dict[str, str] = {
         'train': 'train.tsv',
-        'validation': 'valid.tsv',
+        'validation': 'dev.tsv',
         'test': 'test.tsv'
     }
 
@@ -376,6 +378,7 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
             task_proportions: Optional[Dict[str, float]] = None,
             voices_mixing_proportions: Union[Dict[str, float], float] = 0.5,
             max_samples_per_task: int = 1,
+            random_seed: Optional[int] = None,
             **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -390,11 +393,14 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
         self.task_proportions: Dict[str, float] = task_proportions
         self.voices_mixing_proportions: Dict[str, float] = voices_mixing_proportions
         self.max_samples_per_task: int = max_samples_per_task
+        self.random_seed: Optional[int] = random_seed
         #
         self.preprocessed_data = None
         self._prepare_samples()
 
     def _get_random_template(self, task: Literal['speak', 'rec', 'asr', 'tts'], lang_id: str) -> Template:
+        #
+
         #
         if task == 'speak':
             template = self.SPEAK_TEMPLATE
@@ -515,7 +521,47 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
 
     def _prepare_samples(self):
         #
-        # TODO
+        self.data['task'] = None
+        task_proportions = [*self.task_proportions.items()]
+        rescaled_task_proportions = [
+            (task, proportion / sum(v for _, v in task_proportions[i:]) if i > 0 else proportion)
+            for i, (task, proportion) in enumerate(task_proportions)
+        ]
+        #
+        for i, (task, proportion) in enumerate(rescaled_task_proportions):
+            if proportion < 1:
+                gss = GroupShuffleSplit(n_splits=1, train_size=proportion, random_state=self.random_seed)
+                remaining_df = self.data[self.data['task'].apply(lambda x: x is None)]
+                groups = remaining_df['client_id']
+                idxs, _ = next(gss.split(remaining_df, groups=groups))
+                self.data.loc[remaining_df.iloc[idxs].index, 'task'] = task
+            else:
+                self.data[self.data['task'].apply(lambda x: x is None)]['task'] = task
+        #
+        self.data['mixed_voice'] = False
+        for task, proportion in self.voices_mixing_proportions.items():
+            gss = GroupShuffleSplit(n_splits=1, train_size=proportion, random_state=self.random_seed)
+            df = self.data[self.data['task'] == task]
+            groups = df['client_id']
+            idxs, _ = next(gss.split(df, groups=groups))
+            self.data.loc[df.iloc[idxs].index, 'mixed_voice'] = True
+        #
+        self.data['group_id'] = 0
+        for task in self._tasks:
+            for mix in [True, False]:
+                if mix:
+                    for _, group in self.data[(self.data['task'] == task) & (self.data['mixed_voice'] == mix)].groupby('client_id'):
+                        n = len(group)
+                        offset = self.data['group_id'].max()
+                        group_ids = np.arange(n) % int(n / self.max_samples_per_task) + offset
+                        np.random.shuffle(group_ids)
+                        self.data.loc[group.index, 'group_id'] = group_ids
+                else:
+                    n = len(self.data[(self.data['task'] == task) & (self.data['mixed_voice'] == mix)]['group_id'])
+                    offset = self.data['group_id'].max()
+                    group_ids = np.arange(n) % int(n / self.max_samples_per_task) + offset
+                    np.random.shuffle(group_ids)
+                    self.data[(self.data['task'] == task) & (self.data['mixed_voice'] == mix)]['group_id'] = group_ids
         #
         self.preprocessed_data = self.data.group_by('group_id')
 
@@ -523,14 +569,15 @@ class ProcessedMozillaCommonVoice(MozillaCommonVoice):
         return len(self.preprocessed_data)
 
     def __getitem__(self, index: int):
-        samples = [sample.to_dict() for sample in self.preprocessed_data.get_group(index)]
+        samples = self.preprocessed_data.get_group(index)
         lang_id = random.choice(self.languages)
-        task, *_ = random.choices(
-            [*self.task_proportions.keys()], weights=[*self.task_proportions.values()], k=1
-        )
+        task, *_ = samples['task'].unique()
         template = self._get_random_template(task, lang_id)
 
         return {
-            'text': template.render(samples=samples, languages=self._languages_dict[lang_id]),
+            'text': template.render(
+                samples=[sample.to_dict() for sample in samples],
+                languages=self._languages_dict[lang_id]
+            ),
             'audio_file_paths': [os.path.join(sample['base_path'], 'clips', sample['path']) for sample in samples]
         }
