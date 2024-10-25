@@ -12,7 +12,7 @@ from peft import LoraConfig
 
 import yaml
 
-from typing import Dict
+from typing import Dict, Optional
 
 
 def init_training_environment(config_file_path: str) -> Dict:
@@ -48,6 +48,18 @@ def init_training_environment(config_file_path: str) -> Dict:
     # Dump configs
     config_dump_file_path = os.path.join(current_experiment_dir_path, f'config.yml')
     copy2(config_file_path, config_dump_file_path)
+    # Manage HF token
+    env_hf_token: Optional[str] = os.environ.get('HF_TOKEN')
+    if env_hf_token is not None and configs.get('hf_token') is None:
+        configs['hf_token'] = env_hf_token
+    model_kwargs = configs['model'].get('model_kwargs', dict())
+    if env_hf_token is not None and 'token' not in model_kwargs:
+        model_kwargs['token'] = env_hf_token
+        configs['model']['model_kwargs'] = model_kwargs
+    tokenizer_kwargs = configs['model'].get('tokenizer_kwargs', dict())
+    if env_hf_token is not None and 'token' not in tokenizer_kwargs:
+        tokenizer_kwargs['token'] = env_hf_token
+        configs['model']['tokenizer_kwargs'] = tokenizer_kwargs
     # Complete configurations setup
     if configs['model'].get('quantization_configs') is not None:
         configs['model']['quantization_configs'] = BitsAndBytesConfig(**configs['model']['quantization_configs'])
