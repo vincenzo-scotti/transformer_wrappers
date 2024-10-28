@@ -19,7 +19,7 @@ __all__ = [
     'LayerAttentionDropoutAttr',
     'LayerIntermediateNormAttr',
     'LayerFeedForwardAttr',
-    'LayerFeedForwardDropoutAttr'
+    'LayerFeedForwardDropoutAttr',
     'TransformerLayersAttr',
     'TransformerNormAttr',
     'LMTransformerAttr',
