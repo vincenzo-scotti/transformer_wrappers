@@ -136,9 +136,15 @@ class TestTransformerWrapper(unittest.TestCase):
     def test_gpt2_forward_lora(self):
         self._test_lora_forward('gpt2')
 
+    def test_pythia_forward(self):
+        self._test_forward('EleutherAI/pythia-160m')
+
+    def test_pythia_forward_lora(self):
+        self._test_lora_forward('EleutherAI/pythia-160m')
+
     def test_mistral_forward(self):
         self._test_forward(
-            'mistralai/Mistral-7B-Instruct-v0.2',
+            'mistralai/Mistral-7B-v0.3',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -146,9 +152,9 @@ class TestTransformerWrapper(unittest.TestCase):
             }
         )
 
-    def test_gemma_forward(self):
+    def test_gemma2_forward(self):
         self._test_forward(
-            'google/gemma-7b',
+            'google/gemma-2-9b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -158,7 +164,7 @@ class TestTransformerWrapper(unittest.TestCase):
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
-    def test_llama2_forward(self):
+    def test_llama3_forward(self):
         self._test_forward(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
@@ -242,10 +248,16 @@ class TestCausalLMWrapper(unittest.TestCase):
 
     def test_gpt2_forward_lora(self):
         self._test_lora_forward('gpt2')
+        
+    def test_pythia_forward(self):
+        self._test_forward('EleutherAI/pythia-160m')
+
+    def test_pythia_forward_lora(self):
+        self._test_lora_forward('EleutherAI/pythia-160m')
 
     def test_mistral_forward(self):
         self._test_forward(
-            'mistralai/Mistral-7B-Instruct-v0.2',
+            'mistralai/Mistral-7B-v0.3',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -253,9 +265,9 @@ class TestCausalLMWrapper(unittest.TestCase):
             }
         )
 
-    def test_gemma_forward(self):
+    def test_gemma2_forward(self):
         self._test_forward(
-            'google/gemma-7b',
+            'google/gemma-2-9b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -265,7 +277,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
-    def test_llama2_forward(self):
+    def test_llama3_forward(self):
         self._test_forward(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
@@ -331,10 +343,16 @@ class TestCausalLMWrapper(unittest.TestCase):
 
     def test_gpt2_generate_lora(self):
         self._test_lora_generate('gpt2')
+        
+    def test_pythia_generate(self):
+        self._test_generate('EleutherAI/pythia-160m')
+
+    def test_pythia_generate_lora(self):
+        self._test_lora_generate('EleutherAI/pythia-160m')
 
     def test_mistral_generate(self):
         self._test_generate(
-            'mistralai/Mistral-7B-Instruct-v0.2',
+            'mistralai/Mistral-7B-v0.3',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -342,9 +360,9 @@ class TestCausalLMWrapper(unittest.TestCase):
             }
         )
 
-    def test_gemma_generate(self):
+    def test_gemma2_generate(self):
         self._test_generate(
-            'google/gemma-7b',
+            'google/gemma-2-9b',
             model_kwargs={
                 'torch_dtype': torch.bfloat16,
                 'attn_implementation': 'eager',
@@ -354,7 +372,7 @@ class TestCausalLMWrapper(unittest.TestCase):
             tokenizer_kwargs={'token': os.environ['HUGGING_FACE_TOKEN']}
         )
 
-    def test_llama2_generate(self):
+    def test_llama3_generate(self):
         self._test_generate(
             'meta-llama/Llama-2-7b-hf',
             model_kwargs={
