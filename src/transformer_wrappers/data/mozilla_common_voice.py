@@ -1,6 +1,7 @@
 import os
 
 import pandas as pd
+from sklearn.model_selection import GroupShuffleSplit
 
 from torch.utils.data import Dataset
 
@@ -19,8 +20,12 @@ class MozillaCommonVoice(Dataset):
             self,
             path: Union[str, Iterable[str]],
             split: str,
-            language: Optional[Union[str, Iterable[str]]] = None
+            language: Optional[Union[str, Iterable[str]]] = None,
+            subsample: Optional[Dict[str, float]] = None,
+            random_seed: Optional[int] = None
     ):
+        #
+        subsample = subsample if subsample is not None else dict()
         #
         self.paths: Iterable[str] = [path] if isinstance(path, str) else path
         self.split: str = split
@@ -30,12 +35,19 @@ class MozillaCommonVoice(Dataset):
                 if os.path.isdir(os.path.join(path, lang_id))
             )
         self.languages: Tuple[str] = (language,) if isinstance(language, str) else tuple(set(language))
+        self.subsample: Dict[str, float] = subsample if subsample is not None else None
+        self.random_seed: Optional[int] = random_seed
         #
         data: List[pd.DataFrame] = list()
         for path in self.paths:
             for language in self.languages:
                 if os.path.exists(os.path.join(path, language, self._split_mapping[self.split])):
                     df = pd.read_csv(os.path.join(path, language, self._split_mapping[self.split]), sep='\t')
+                    fraction = self.subsample.get(language, 1.0)
+                    if 0.0 < fraction < 1.0:
+                        gss = GroupShuffleSplit(n_splits=1, train_size=fraction, random_state=self.random_seed)
+                        groups = df['client_id']
+                        df, _ = next(gss.split(df, groups=groups))
                     df['language'] = language
                     df['base_path'] = os.path.join(path, language)
                     data.append(df)
