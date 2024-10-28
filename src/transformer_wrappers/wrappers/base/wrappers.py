@@ -1071,8 +1071,8 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     _auto_peft_model_dtype: Optional[Type[PeftModel]] = None
 
     # TODO fix-me this is a temporary solution to use non-eager attention
-    # _supports_flash_attn_2 = True
-    # _supports_sdpa = True
+    _supports_flash_attn_2 = True
+    _supports_sdpa = True
 
     supports_gradient_checkpointing = True
 
@@ -1125,7 +1125,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
         tokenizer_kwargs = tokenizer_kwargs if tokenizer_kwargs else dict()
         #
         model_kwargs = deepcopy(model_kwargs)
-        model_kwargs['attn_implementation'] = 'eager'  # Make better version
+        # model_kwargs['attn_implementation'] = 'eager'  # Make better version
         if quantization_configs is not None:
             model_kwargs['quantization_config'] = quantization_configs
         task_specific_configs = model_kwargs.get(cls.TASK_SPECIFIC_CONFIGS_KEY, dict())
