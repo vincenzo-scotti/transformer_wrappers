@@ -12,6 +12,7 @@ import librosa
 from transformers import logging
 from transformers import PreTrainedModel, BatchEncoding
 from transformers import GPT2PreTrainedModel
+from transformers.activations import ACT2FN
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
@@ -33,6 +34,7 @@ from .base.constants import *
 __all__ = ['AudioProcessor', 'SpeechTransformerWrapper', 'SpeechCausalLMWrapper']
 
 AUDIO_TOKEN: str = 'audio_token'
+SPEECH: str = 'speech'
 
 INPUT_SPECTROGRAMS: str = 'input_spectrograms'
 SPEECH_MASK: str = 'speech_mask'
@@ -282,13 +284,35 @@ class SpeechTransformerWrapper(TransformerWrapper):
             n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
-        # TODO make speech embedding more configurable
-        speech_encoder = torch.nn.Conv1d(
-            audio_processor.channels,
-            model.config.hidden_size,
-            model.config.hidden_size // audio_processor.channels,
-            stride=model.config.hidden_size // audio_processor.channels,
-            # dtype=model.base_model.dtype
+
+        speech_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
+            SPEECH, {
+                'in_channels': audio_processor.channels,
+                'out_channels': model.config.hidden_size,
+                'kernel_size': model.config.hidden_size // audio_processor.channels,
+                'stride': model.config.hidden_size // audio_processor.channels
+            }
+        )
+        if isinstance(speech_configs, dict):
+            speech_configs = [speech_configs]
+        act_key = 'activation_function' if isinstance(model, GPT2PreTrainedModel) else 'hidden_act'
+        speech_encoder_configs = []
+        for i, config in enumerate(speech_configs):
+            encoder_config = config.copy()
+            if i == 0:
+                encoder_config |= {'in_channels': audio_processor.channels}
+            if i == len(speech_configs) - 1:
+                encoder_config |= {'out_channels': model.config.hidden_size}
+            if 'stride' not in encoder_config:
+                encoder_config |= {'stride': encoder_config['kernel_size']}
+            speech_encoder_configs.append(encoder_config)
+        speech_encoder = torch.sequential(
+            *[
+                fn
+                for configs in speech_encoder_configs[:-1]
+                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(model.config.get(act_key), nn.GELU())]
+            ],
+            torch.nn.Conv1d(**speech_encoder_configs[-1])
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -389,6 +413,7 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
 
         return output
 
+
 class SpeechCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[TransformerWrapper] = SpeechTransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = SpeechLMHeadWrapper
@@ -441,7 +466,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
 
     @property
     def speech_conversion_factor(self):
-        return self.config.hidden_size // self.audio_processor.channels
+        factor = 1
+        for module in self.transformer_wrapper.embedding_wrapper.speech_encoder:
+            if isinstance(module, nn.Conv1d):
+                factor *= module.kernel_size[0]
+
+        return factor
 
     @classmethod
     def from_pretrained(
@@ -486,13 +516,35 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
-        # TODO make speech embedding more configurable
-        speech_encoder = torch.nn.Conv1d(
-            audio_processor.channels,
-            model.config.hidden_size,
-            model.config.hidden_size // audio_processor.channels,
-            stride=model.config.hidden_size // audio_processor.channels,
-            # dtype=model.base_model.dtype
+
+        speech_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
+            SPEECH, {
+                'in_channels': audio_processor.channels,
+                'out_channels': model.config.hidden_size,
+                'kernel_size': model.config.hidden_size // audio_processor.channels,
+                'stride': model.config.hidden_size // audio_processor.channels
+            }
+        )
+        if isinstance(speech_configs, dict):
+            speech_configs = [speech_configs]
+        act_key = 'activation_function' if isinstance(model, GPT2PreTrainedModel) else 'hidden_act'
+        speech_encoder_configs = []
+        for i, config in enumerate(speech_configs):
+            encoder_config = config.copy()
+            if i == 0:
+                encoder_config |= {'in_channels': audio_processor.channels}
+            if i == len(speech_configs) - 1:
+                encoder_config |= {'out_channels': model.config.hidden_size}
+            if 'stride' not in encoder_config:
+                encoder_config |= {'stride': encoder_config['kernel_size']}
+            speech_encoder_configs.append(encoder_config)
+        speech_encoder = torch.nn.Sequential(
+            *[
+                fn
+                for configs in speech_encoder_configs[:-1]
+                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(model.config.get(act_key), nn.GELU())]
+            ],
+            torch.nn.Conv1d(**speech_encoder_configs[-1])
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -501,12 +553,28 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE),
                 weights_only=True
             ))
-        speech_decoder = torch.nn.ConvTranspose1d(
-            model.config.hidden_size,
-            audio_processor.channels,
-            model.config.hidden_size // audio_processor.channels,
-            stride=model.config.hidden_size // audio_processor.channels,
-            dtype=model.base_model.dtype
+        speech_decoder_configs = []
+        for i, config in enumerate(speech_configs):
+            decoder_configs = config.copy()
+            if i == 0:
+                decoder_configs |= {'in_channels': audio_processor.channels}
+            if i == len(speech_configs) - 1:
+                decoder_configs |= {'out_channels': model.config.hidden_size}
+            decoder_configs['in_channels'], decoder_configs['out_channels'] = decoder_configs['out_channels'], decoder_configs['in_channels']
+            if 'stride' not in decoder_configs:
+                decoder_configs |= {'stride': decoder_configs['kernel_size']}
+            speech_decoder_configs.append(decoder_configs)
+        speech_decoder_configs = speech_decoder_configs[::-1]
+        speech_decoder = torch.nn.Sequential(
+            *[
+                fn
+                for configs in speech_decoder_configs[:-1]
+                for fn in [
+                    torch.nn.ConvTranspose1d(**configs, dtype=model.base_model.dtype),
+                    ACT2FN.get(model.config.get(act_key), nn.GELU())
+                ]
+            ],
+            torch.nn.ConvTranspose1d(**speech_decoder_configs[-1], dtype=model.base_model.dtype)
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE)
