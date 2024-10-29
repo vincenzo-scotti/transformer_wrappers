@@ -308,13 +308,17 @@ class SpeechTransformerWrapper(TransformerWrapper):
             if 'stride' not in encoder_config:
                 encoder_config |= {'stride': encoder_config['kernel_size']}
             speech_encoder_configs.append(encoder_config)
-        speech_encoder = torch.sequential(
+        speech_encoder = nn.Sequential(
             *[
                 fn
                 for configs in speech_encoder_configs[:-1]
-                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(getattr(model.config, act_key), nn.GELU())]
+                for fn in [
+                    nn.Conv1d(**configs),
+                    ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
+                    nn.Dropout(0.1)
+                ]
             ],
-            torch.nn.Conv1d(**speech_encoder_configs[-1])
+            nn.Conv1d(**speech_encoder_configs[-1])
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -542,13 +546,17 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             if 'stride' not in encoder_config:
                 encoder_config |= {'stride': encoder_config['kernel_size']}
             speech_encoder_configs.append(encoder_config)
-        speech_encoder = torch.nn.Sequential(
+        speech_encoder = nn.Sequential(
             *[
                 fn
                 for configs in speech_encoder_configs[:-1]
-                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(getattr(model.config, act_key), nn.GELU)()]
+                for fn in [
+                    nn.Conv1d(**configs),
+                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
+                    nn.Dropout(0.1)
+                ]
             ],
-            torch.nn.Conv1d(**speech_encoder_configs[-1])
+            nn.Conv1d(**speech_encoder_configs[-1])
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -569,16 +577,17 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 decoder_configs |= {'stride': decoder_configs['kernel_size']}
             speech_decoder_configs.append(decoder_configs)
         speech_decoder_configs = speech_decoder_configs[::-1]
-        speech_decoder = torch.nn.Sequential(
+        speech_decoder = nn.Sequential(
             *[
                 fn
                 for configs in speech_decoder_configs[:-1]
                 for fn in [
-                    torch.nn.ConvTranspose1d(**configs, dtype=model.base_model.dtype),
-                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)()
+                    nn.ConvTranspose1d(**configs, dtype=model.base_model.dtype),
+                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
+                    nn.Dropout(0.1)
                 ]
             ],
-            torch.nn.ConvTranspose1d(**speech_decoder_configs[-1], dtype=model.base_model.dtype)
+            nn.ConvTranspose1d(**speech_decoder_configs[-1], dtype=model.base_model.dtype)
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE)
