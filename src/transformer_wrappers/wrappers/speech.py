@@ -295,7 +295,9 @@ class SpeechTransformerWrapper(TransformerWrapper):
         )
         if isinstance(speech_configs, dict):
             speech_configs = [speech_configs]
-        act_key = 'activation_function' if isinstance(model, GPT2PreTrainedModel) else 'hidden_act'
+        act_key = 'activation_function' if isinstance(
+            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
+        ) else 'hidden_act'
         speech_encoder_configs = []
         for i, config in enumerate(speech_configs):
             encoder_config = config.copy()
@@ -310,7 +312,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
             *[
                 fn
                 for configs in speech_encoder_configs[:-1]
-                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(model.config.get(act_key), nn.GELU())]
+                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(getattr(model.config, act_key), nn.GELU())]
             ],
             torch.nn.Conv1d(**speech_encoder_configs[-1])
         )
@@ -527,7 +529,9 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         )
         if isinstance(speech_configs, dict):
             speech_configs = [speech_configs]
-        act_key = 'activation_function' if isinstance(model, GPT2PreTrainedModel) else 'hidden_act'
+        act_key = 'activation_function' if isinstance(
+            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
+        ) else 'hidden_act'
         speech_encoder_configs = []
         for i, config in enumerate(speech_configs):
             encoder_config = config.copy()
@@ -542,7 +546,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             *[
                 fn
                 for configs in speech_encoder_configs[:-1]
-                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(model.config.get(act_key), nn.GELU())]
+                for fn in [torch.nn.Conv1d(**configs), ACT2FN.get(getattr(model.config, act_key), nn.GELU)()]
             ],
             torch.nn.Conv1d(**speech_encoder_configs[-1])
         )
@@ -571,7 +575,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 for configs in speech_decoder_configs[:-1]
                 for fn in [
                     torch.nn.ConvTranspose1d(**configs, dtype=model.base_model.dtype),
-                    ACT2FN.get(model.config.get(act_key), nn.GELU())
+                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)()
                 ]
             ],
             torch.nn.ConvTranspose1d(**speech_decoder_configs[-1], dtype=model.base_model.dtype)
@@ -794,8 +798,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     def _pad_spectrogram(self, spec: torch.Tensor) -> torch.Tensor:
         # TODO do padding replicating side slices
         # TODO add support for cases where there isn't a single convolution with hop length equal to window length
-        n_elements = spec.numel()
-        expected_n_elements = int(math.ceil(n_elements / self.config.hidden_size)) * self.config.hidden_size
+        n_elements = spec.size(-1)
+        expected_n_elements = int(math.ceil(n_elements / self.speech_conversion_factor)) * self.speech_conversion_factor
         pad_left = int(math.ceil((expected_n_elements - n_elements) / 2))
         pad_right = (expected_n_elements - n_elements) // 2
         spec = F.pad(spec, (pad_left, pad_right), value=spec.min())
@@ -827,7 +831,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             ]
             text = [
                 head + str().join(
-                    self.audio_token * (spec.numel() // self.base_model.config.hidden_size) + split
+                    self.audio_token * (spec.size(-1) // self.speech_conversion_factor) + split
                     for spec, split in zip(sequence_spectrograms, splits)
                 )
                 for (head, *splits), sequence_spectrograms in zip(
@@ -840,7 +844,11 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         input_encodings = self.tokenizer(text, return_tensors='pt', padding=True)  # , add_special_tokens=False)
         if spectrograms is not None:
             input_encodings[INPUT_SPECTROGRAMS] = torch.full(
-                (input_encodings.input_ids.size(0), self.audio_processor.channels, input_encodings.input_ids.size(1) * self.speech_conversion_factor),
+                (
+                    input_encodings.input_ids.size(0),
+                    self.audio_processor.channels,
+                    input_encodings.input_ids.size(1) * self.speech_conversion_factor
+                ),
                 torch.nan
             )
             input_encodings.input_spectrograms[
