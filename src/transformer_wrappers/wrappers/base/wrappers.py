@@ -272,7 +272,9 @@ class AttentionWrapper(ModuleWrapper):
         elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.internal_model, GPTNeoXPreTrainedModel):
             attention_params |= {POSITION_IDS: kwargs[POSITION_IDS], LAYER_PAST: kwargs[PAST_KEY_VALUES][layer_idx]}
         elif isinstance(self.super_wrapper.super_wrapper.super_wrapper.internal_model, SHARED_STRUCTURE_MODELS):
-            attention_params |= {PAST_KEY_VALUE: kwargs[PAST_KEY_VALUES]}
+            attention_params |= {
+                PAST_KEY_VALUE: kwargs[PAST_KEY_VALUES], CACHE_POSITION: kwargs[CACHE_POSITION]
+            }
         else:
             raise NotImplementedError(
                 f'Unsupported model type: `{type(self.super_wrapper.super_wrapper.super_wrapper.internal_model)}`.'
@@ -1458,7 +1460,7 @@ class TransformerWrapper(PreTrainedModelWrapper):
                 raise NotImplementedError(f'Unsupported model type: `{type(self.internal_model)}`.')
         if cache_position is None:
             # TODO check back this part for corner case when sequence is longer that max len
-            if isinstance(self.internal_model, (GemmaPreTrainedModel, Gemma2PreTrainedModel, LlamaPreTrainedModel)):
+            if isinstance(self.internal_model, (GemmaPreTrainedModel, Gemma2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)):
                 cache_position = torch.arange(prefix_length, prefix_length + seq_length, device=device)
         # Positions
         if position_ids is not None:
