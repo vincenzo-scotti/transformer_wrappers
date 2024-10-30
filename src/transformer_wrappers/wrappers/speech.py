@@ -34,7 +34,9 @@ from .base.constants import *
 __all__ = ['AudioProcessor', 'SpeechTransformerWrapper', 'SpeechCausalLMWrapper']
 
 AUDIO_TOKEN: str = 'audio_token'
-SPEECH: str = 'speech'
+SPEECH_ENCODER_CONFIGS: str = 'speech_encoder'
+SPEECH_DECODER_CONFIGS: str = 'speech_decoder'
+POST_NET_CONFIGS: str = 'post_net'
 
 INPUT_SPECTROGRAMS: str = 'input_spectrograms'
 SPEECH_MASK: str = 'speech_mask'
@@ -285,35 +287,35 @@ class SpeechTransformerWrapper(TransformerWrapper):
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
 
-        speech_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
-            SPEECH, {
+        act_key = 'activation_function' if isinstance(
+            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
+        ) else 'hidden_act'
+        speech_encoder_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
+            SPEECH_ENCODER_CONFIGS, {
                 'in_channels': audio_processor.channels,
                 'out_channels': model.config.hidden_size,
                 'kernel_size': model.config.hidden_size // audio_processor.channels,
                 'stride': model.config.hidden_size // audio_processor.channels
             }
         )
-        if isinstance(speech_configs, dict):
-            speech_configs = [speech_configs]
-        act_key = 'activation_function' if isinstance(
-            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
-        ) else 'hidden_act'
-        speech_encoder_configs = []
-        for i, config in enumerate(speech_configs):
-            encoder_config = config.copy()
+        if isinstance(speech_encoder_configs, dict):
+            speech_encoder_configs = [speech_encoder_configs]
+        for i in range(len(speech_encoder_configs)):
             if i == 0:
-                encoder_config |= {'in_channels': audio_processor.channels}
-            if i == len(speech_configs) - 1:
-                encoder_config |= {'out_channels': model.config.hidden_size}
-            if 'stride' not in encoder_config:
-                encoder_config |= {'stride': encoder_config['kernel_size']}
-            speech_encoder_configs.append(encoder_config)
+                speech_encoder_configs[i] |= {'in_channels': audio_processor.channels}
+            else:
+                speech_encoder_configs[i] |= {'in_channels': speech_encoder_configs[i-1]['out_channels']}
+            if i == len(speech_encoder_configs) - 1:
+                speech_encoder_configs[i] |= {'out_channels': model.config.hidden_size}
+            if 'stride' not in speech_encoder_configs[i]:
+                speech_encoder_configs[i] |= {'stride': speech_encoder_configs[i]['kernel_size']}
         speech_encoder = nn.Sequential(
             *[
-                fn
+                module
                 for configs in speech_encoder_configs[:-1]
-                for fn in [
-                    nn.Conv1d(**configs),
+                for module in [
+                    nn.BatchNorm1d(configs['in_channels']),
+                    nn.Conv1d(**configs, bias=False),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
                     nn.Dropout(0.1)
                 ]
@@ -363,11 +365,20 @@ class SpeechTransformerWrapper(TransformerWrapper):
 class SpeechLMHeadWrapper(LMHeadWrapper):
     SPEECH_DECODER_FILE: str = 'speech_decoder.pth'
     MODALITY_SWITCH_FILE: str = 'modality_switch.pth'
+    POST_NET_FILE: str = 'post_net.pth'
 
-    def __init__(self, module: nn.Module, speech_decoder: nn.Module, modality_switch: nn.Module, *args, **kwargs):
+    def __init__(
+            self, module: nn.Module,
+            speech_decoder: nn.Module,
+            modality_switch: nn.Module,
+            *args,
+            post_net: Optional[nn.Module] = None,
+            **kwargs
+    ):
         super().__init__(module, *args, **kwargs)
         #
         self._speech_decoder: nn.Module = speech_decoder
+        self._post_net: Optional[nn.Module] = post_net
         self._modality_switch: nn.Module = modality_switch
 
     @property
@@ -377,6 +388,10 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
     @property
     def modality_switch(self):
         return self._modality_switch
+
+    @property
+    def post_net(self) -> Optional[nn.Module]:
+        return self._post_net
 
     def _wrapped_forward(
             self,
@@ -414,6 +429,8 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
                     kwargs.get(INPUT_SPECTROGRAMS, torch.full_like(output[self.module_output][SPECTROGRAMS], torch.nan)),
                     output[self.module_output][SPECTROGRAMS][..., -self.super_wrapper.speech_conversion_factor:]
                 ])
+        elif self.post_net is not None:
+            output[self.module_output][SPECTROGRAMS] = output[self.module_output][SPECTROGRAMS] + self.post_net(output[self.module_output][SPECTROGRAMS])
         #
         output |= {GENERATED_SPECTROGRAMS: generated_spectrograms}
 
@@ -431,6 +448,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             speech_decoder: nn.Module,
             modality_switch: nn.Module,
             *args,
+            post_net: Optional[nn.Module] = None,
             **kwargs
     ):
         # Attribute names
@@ -447,6 +465,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             getattr(self.internal_model, self._lm_head_attr.value),
             speech_decoder,
             modality_switch,
+            post_net=post_net,
             super_wrapper=self
         ),
 
@@ -523,35 +542,36 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
 
-        speech_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
-            SPEECH, {
+        act_key = 'activation_function' if isinstance(
+            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
+        ) else 'hidden_act'
+        #
+        speech_encoder_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
+            SPEECH_ENCODER_CONFIGS, {
                 'in_channels': audio_processor.channels,
                 'out_channels': model.config.hidden_size,
                 'kernel_size': model.config.hidden_size // audio_processor.channels,
                 'stride': model.config.hidden_size // audio_processor.channels
             }
         )
-        if isinstance(speech_configs, dict):
-            speech_configs = [speech_configs]
-        act_key = 'activation_function' if isinstance(
-            model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
-        ) else 'hidden_act'
-        speech_encoder_configs = []
-        for i, config in enumerate(speech_configs):
-            encoder_config = config.copy()
+        if isinstance(speech_encoder_configs, dict):
+            speech_encoder_configs = [speech_encoder_configs]
+        for i in range(len(speech_encoder_configs)):
             if i == 0:
-                encoder_config |= {'in_channels': audio_processor.channels}
-            if i == len(speech_configs) - 1:
-                encoder_config |= {'out_channels': model.config.hidden_size}
-            if 'stride' not in encoder_config:
-                encoder_config |= {'stride': encoder_config['kernel_size']}
-            speech_encoder_configs.append(encoder_config)
+                speech_encoder_configs[i] |= {'in_channels': audio_processor.channels}
+            else:
+                speech_encoder_configs[i] |= {'in_channels': speech_encoder_configs[i-1]['out_channels']}
+            if i == len(speech_encoder_configs) - 1:
+                speech_encoder_configs[i] |= {'out_channels': model.config.hidden_size}
+            if 'stride' not in speech_encoder_configs[i]:
+                speech_encoder_configs[i] |= {'stride': speech_encoder_configs[i]['kernel_size']}
         speech_encoder = nn.Sequential(
             *[
-                fn
+                module
                 for configs in speech_encoder_configs[:-1]
-                for fn in [
-                    nn.Conv1d(**configs),
+                for module in [
+                    nn.BatchNorm1d(configs['in_channels']),
+                    nn.Conv1d(**configs, bias=False),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1)
                 ]
@@ -565,24 +585,34 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE),
                 weights_only=True
             ))
-        speech_decoder_configs = []
-        for i, config in enumerate(speech_configs):
-            decoder_configs = config.copy()
+        #
+        speech_decoder_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(
+            SPEECH_DECODER_CONFIGS, {
+                'in_channels': audio_processor.channels,
+                'out_channels': model.config.hidden_size,
+                'kernel_size': model.config.hidden_size // audio_processor.channels,
+                'stride': model.config.hidden_size // audio_processor.channels
+            }
+        )
+        #
+        if isinstance(speech_decoder_configs, dict):
+            speech_decoder_configs = [speech_decoder_configs]
+        for i in range(len(speech_decoder_configs)):
             if i == 0:
-                decoder_configs |= {'in_channels': audio_processor.channels}
-            if i == len(speech_configs) - 1:
-                decoder_configs |= {'out_channels': model.config.hidden_size}
-            decoder_configs['in_channels'], decoder_configs['out_channels'] = decoder_configs['out_channels'], decoder_configs['in_channels']
-            if 'stride' not in decoder_configs:
-                decoder_configs |= {'stride': decoder_configs['kernel_size']}
-            speech_decoder_configs.append(decoder_configs)
-        speech_decoder_configs = speech_decoder_configs[::-1]
+                speech_decoder_configs[i] |= {'in_channels': model.config.hidden_size}
+            else:
+                speech_decoder_configs[i] |= {'in_channels': speech_decoder_configs[i-1]['out_channels']}
+            if i == len(speech_decoder_configs) - 1:
+                speech_decoder_configs[i] |= {'out_channels': audio_processor.channels}
+            if 'stride' not in speech_encoder_configs[i]:
+                speech_decoder_configs[i] |= {'stride': speech_decoder_configs[i]['kernel_size']}
         speech_decoder = nn.Sequential(
             *[
-                fn
+                module
                 for configs in speech_decoder_configs[:-1]
-                for fn in [
-                    nn.ConvTranspose1d(**configs, dtype=model.base_model.dtype),
+                for module in [
+                    nn.BatchNorm1d(configs['in_channels']),
+                    nn.ConvTranspose1d(**configs, bias=False, dtype=model.base_model.dtype),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1)
                 ]
@@ -596,6 +626,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE),
                 weights_only=True
             ))
+        #
         modality_switch = torch.nn.Linear(model.config.hidden_size, 1, dtype=model.base_model.dtype)
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
@@ -604,8 +635,43 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE),
                 weights_only=True
             ))
+        #
+        post_net_configs = model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(POST_NET_CONFIGS)
+        if post_net_configs is not None:
+            if isinstance(post_net_configs, dict):
+                post_net_configs = [post_net_configs]
+            for i in range(len(post_net_configs)):
+                if i == 0:
+                    post_net_configs[i] |= {'in_channels': audio_processor.channels}
+                else:
+                    post_net_configs[i] |= {'in_channels': post_net_configs[i - 1]['out_channels']}
+                if i == len(post_net_configs) - 1:
+                    post_net_configs[i] |= {'out_channels': audio_processor.channels}
+            post_net = nn.Sequential(
+                *[
+                    module
+                    for configs in post_net_configs
+                    for module in [
+                        nn.BatchNorm1d(configs['in_channels']),
+                        nn.Conv1d(**configs, bias=False, dtype=model.base_model.dtype),
+                        ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
+                        nn.Dropout(0.5)
+                    ]
+                ]
+            )
+            if os.path.exists(
+                    os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.POST_NET_FILE)
+            ):
+                speech_decoder.load_state_dict(torch.load(
+                    os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.POST_NET_FILE),
+                    weights_only=True
+                ))
+        else:
+            post_net = None
 
-        wrapper = cls(model, tokenizer, audio_processor, speech_encoder, speech_decoder, modality_switch)
+        wrapper = cls(
+            model, tokenizer, audio_processor, speech_encoder, speech_decoder, modality_switch, post_net=post_net
+        )
 
         if gradient_checkpointing:
             wrapper.gradient_checkpointing_enable()
@@ -633,6 +699,11 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             self.lm_head_wrapper.modality_switch.state_dict(),
             os.path.join(save_directory, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
         )
+        if self.lm_head_wrapper.post_net is not None:
+            torch.save(
+                self.lm_head_wrapper.post_net.state_dict(),
+                os.path.join(save_directory, SpeechLMHeadWrapper.POST_NET_FILE)
+            )
 
     def _spectrogram_generation_loss(self, predicted: torch.Tensor, target: torch.Tensor):
         # Get valid output maks
@@ -763,6 +834,10 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 BASE_MODEL_OUTPUT
             ]
         )
+        #
+        if self.lm_head_wrapper.post_net is not None:
+            generated_spectrograms = generated_spectrograms + self.lm_head_wrapper.post_net(generated_spectrograms)
+        #
         if return_inner_states or not self.is_benchmarking:
             #
             return self.forward(
