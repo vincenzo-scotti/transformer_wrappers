@@ -315,7 +315,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False),
+                    nn.Conv1d(**configs, bias=False, padding='same'),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
                     nn.Dropout(0.1)
                 ]
@@ -571,7 +571,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False),
+                    nn.Conv1d(**configs, bias=False, padding='same'),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1)
                 ]
@@ -653,7 +653,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                     for configs in post_net_configs
                     for module in [
                         nn.BatchNorm1d(configs['in_channels']),
-                        nn.Conv1d(**configs, bias=False, dtype=model.base_model.dtype),
+                        nn.Conv1d(**configs, bias=False, padding='same', dtype=model.base_model.dtype),
                         ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                         nn.Dropout(0.5)
                     ]
@@ -706,12 +706,14 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             )
 
     def _spectrogram_generation_loss(self, predicted: torch.Tensor, target: torch.Tensor):
+        # Shift predictions to exclude the last element
+        predicted = predicted[..., :-self.speech_conversion_factor]
+        # shift targets to exclude the first element
+        target = target[..., self.speech_conversion_factor:]
         # Get valid output maks
         mask = ~target.isnan()
-        # Shift predictions to exclude the last element
-        predicted = predicted[..., :-self.speech_conversion_factor][mask[..., :-self.speech_conversion_factor]]
-        # shift targets to exclude the first element
-        target = target[..., self.speech_conversion_factor:][mask[..., self.speech_conversion_factor:]]
+        predicted = predicted[mask]
+        target = target[mask]
         # Compute LM loss token-wise
         loss: torch.Tensor = F.mse_loss(predicted, target)
 
@@ -925,9 +927,9 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         else:
             spectrograms = None
         #
-        input_encodings = self.tokenizer(text, return_tensors='pt', padding=True)  # , add_special_tokens=False)
+        input_encodings = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True)  # , add_special_tokens=False)
         if spectrograms is not None:
-            input_encodings[INPUT_SPECTROGRAMS] = torch.full(
+            audio_stream = torch.full(
                 (
                     input_encodings.input_ids.size(0),
                     self.audio_processor.channels,
@@ -935,13 +937,16 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 ),
                 torch.nan
             )
-            input_encodings.input_spectrograms[
+            audio_stream[
                 torch.repeat_interleave(
                     input_encodings.input_ids == self.audio_token_id,
                     self.speech_conversion_factor,
                     dim=-1
                 ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
             ] = torch.hstack([spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]).ravel()
+            if audio_stream.size(-1) > input_encodings.input_ids.size(-1) * self.speech_conversion_factor:  # Apply truncation
+                audio_stream = audio_stream[..., :input_encodings.input_ids.size(-1) * self.speech_conversion_factor]
+            input_encodings[INPUT_SPECTROGRAMS] = audio_stream
 
         return input_encodings
 
