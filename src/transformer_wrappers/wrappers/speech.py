@@ -1,5 +1,6 @@
 import os
 import inspect
+import pickle
 
 import math
 import numpy as np
@@ -8,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import librosa
+from sklearn.preprocessing import StandardScaler
 
 from transformers import logging
 from transformers import PreTrainedModel, BatchEncoding
@@ -16,6 +18,7 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
+from transformers import logging as hf_logging
 
 from typing import Type, Optional, Union, List, Iterable, Tuple, Dict
 
@@ -32,6 +35,8 @@ from .base.constants import *
 
 
 __all__ = ['AudioProcessor', 'SpeechTransformerWrapper', 'SpeechCausalLMWrapper']
+
+logger = hf_logging.get_logger(__name__)
 
 AUDIO_TOKEN: str = 'audio_token'
 SPEECH_ENCODER_CONFIGS: str = 'speech_encoder'
@@ -66,13 +71,15 @@ logger = logging.get_logger(__name__)
 
 
 class AudioProcessor:
+    STANDARD_SCALER_FILE: str = 'audio_scaler.pickle'
+
     def __init__(
             self,
             sr: int = 16000,
             win_size: float = 0.025,  # In seconds
             hop_size: Optional[float] = 0.01,  # In seconds, defaults to window size
             n_fft: int = 512,
-            n_mel: Optional[int] = 128,  # Typical value is 80 if not None, change to match speech embeddings requirements
+            n_mel: Optional[int] = 80,  # Typical value is 80 if not None, change to match speech embeddings requirements
             n_mfcc: Optional[int] = None  # Typical value is 12 if not None, change to match speech embedding requirements
     ):
         self.sr: int = sr
@@ -84,6 +91,8 @@ class AudioProcessor:
         #
         self._win_size_samples: int = int(math.ceil(self.win_size * self.sr))
         self._hop_size_samples: int = int(math.ceil(self.hop_size * self.sr))
+        #
+        self._scaler: Optional[StandardScaler] = None
 
     @property
     def channels(self) -> int:
@@ -119,6 +128,8 @@ class AudioProcessor:
                     hop_length=self._hop_size_samples
                 )
                 spec = librosa.power_to_db(np.abs(spec) ** 2, ref=np.max)
+                if self._scaler is not None:
+                    spec = self._scaler.transform(spec)
 
                 return spec
             elif self.n_mel is not None and self.n_mfcc is None:
@@ -130,6 +141,8 @@ class AudioProcessor:
                     n_mels=self.n_mel
                 )
                 mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
+                if self._scaler is not None:
+                    mel_spec = self._scaler.transform(mel_spec)
 
                 return mel_spec
             elif self.n_mel is not None and self.n_mfcc is not None:
@@ -142,6 +155,8 @@ class AudioProcessor:
                     hop_length=self._hop_size_samples,
                     n_mels=self.n_mel
                 )
+                if self._scaler is not None:
+                    mfcc = self._scaler.transform(mfcc)
 
                 return mfcc
             else:
@@ -161,6 +176,26 @@ class AudioProcessor:
     @staticmethod
     def get_encoded_length(speech_data: Union[np.ndarray, torch.Tensor], embedding_dim: int):
         return int(math.ceil(speech_data.numel() / embedding_dim))
+
+    def fit_scaler(self, speech_data: Union[Iterable[str], Iterable[np.ndarray], str, np.ndarray]):
+        #
+        if self._scaler is not None:
+            self._scaler = None
+        speech_data = self.encode(speech_data)
+        #
+        if not isinstance(speech_data, np.ndarray):
+            speech_data = np.hstack(speech_data)
+        speech_data = speech_data.T
+
+        self._scaler = StandardScaler().fit(speech_data)
+
+    def load_scaler(self, path: str):
+        with open(path, 'rb') as f:
+            self._scaler = pickle.load(f)
+
+    def serialise_scaler(self, path: str):
+        with open(path, 'wb') as f:
+            pickle.dump(self._scaler, f)
 
 
 class SpeechEmbeddingWrapper(EmbeddingWrapper):
@@ -286,6 +321,8 @@ class SpeechTransformerWrapper(TransformerWrapper):
             n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
+        if os.path.exists(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE)):
+            audio_processor.load_scaler(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE))
 
         act_key = 'activation_function' if isinstance(
             model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
@@ -315,7 +352,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False, padding='same'),
+                    nn.Conv1d(**configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid'),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
                     nn.Dropout(0.1)
                 ]
@@ -350,6 +387,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
             self.embedding_wrapper.speech_encoder.state_dict(),
             os.path.join(save_directory, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
         )
+        self.audio_processor.serialise_scaler(os.path.join(save_directory, AudioProcessor.STANDARD_SCALER_FILE))
 
     def _pre_process_input(self, *args, speech_mask: Optional[torch.BoolTensor] = None, **kwargs):
         kwargs = super()._pre_process_input(*args, **kwargs)
@@ -541,6 +579,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
             n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
         )
+        if os.path.exists(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE)):
+            audio_processor.load_scaler(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE))
 
         act_key = 'activation_function' if isinstance(
             model if lora_configs is None else model.base_model.base_model, GPT2PreTrainedModel
@@ -571,7 +611,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False, padding='same'),
+                    nn.Conv1d(**configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid'),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1)
                 ]
@@ -653,7 +693,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                     for configs in post_net_configs
                     for module in [
                         nn.BatchNorm1d(configs['in_channels']),
-                        nn.Conv1d(**configs, bias=False, padding='same', dtype=model.base_model.dtype),
+                        nn.Conv1d(
+                            **configs,
+                            bias=False,
+                            padding='same' if configs.get('stride', 1) == 1 else 'valid',
+                            dtype=model.base_model.dtype
+                        ),
                         ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                         nn.Dropout(0.5)
                     ]
@@ -704,6 +749,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 self.lm_head_wrapper.post_net.state_dict(),
                 os.path.join(save_directory, SpeechLMHeadWrapper.POST_NET_FILE)
             )
+        self.audio_processor.serialise_scaler(os.path.join(save_directory, AudioProcessor.STANDARD_SCALER_FILE))
 
     def _spectrogram_generation_loss(self, predicted: torch.Tensor, target: torch.Tensor):
         # Shift predictions to exclude the last element
@@ -1006,3 +1052,10 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
 
         return wrapper_output, loss
+
+    def fine_tune(self, data_splits, *_, **kwargs) -> 'CausalLMWrapper':
+        # Fit audio scaler
+        self.audio_processor.fit_scaler(data_splits['train'].get_audio_scaling_samples())
+        logging.info("Data loaders instantiated")
+        # Run training routine
+        return super().fine_tune(data_splits, **kwargs)

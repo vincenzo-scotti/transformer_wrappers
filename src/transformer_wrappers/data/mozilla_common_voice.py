@@ -47,11 +47,12 @@ class MozillaCommonVoice(Dataset):
                     if 0.0 < fraction < 1.0:
                         gss = GroupShuffleSplit(n_splits=1, train_size=fraction, random_state=self.random_seed)
                         groups = df['client_id']
-                        df, _ = next(gss.split(df, groups=groups))
+                        idxs, _ = next(gss.split(df, groups=groups))
+                        df = df.iloc[idxs]
                     df['language'] = language
                     df['base_path'] = os.path.join(path, language)
                     data.append(df)
-        self.data: pd.DataFrame = pd.concat(data) if len(data) > 1 else data[0]
+        self.data: pd.DataFrame = pd.concat(data, ignore_index=True) if len(data) > 1 else data[0]
 
     def __len__(self) -> int:
         # Number of sequences within the data set
