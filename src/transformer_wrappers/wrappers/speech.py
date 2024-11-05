@@ -1,5 +1,6 @@
 import os
-import inspect
+import logging
+from datetime import datetime
 import pickle
 
 import math
@@ -7,6 +8,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+import lightning as L
+from lightning.pytorch import callbacks as pl_callbacks
+from lightning.pytorch import loggers as pl_loggers
 
 import librosa
 from sklearn.preprocessing import StandardScaler
@@ -18,7 +23,9 @@ from transformers.activations import ACT2FN
 from transformers.modeling_outputs import CausalLMOutputWithPast, CausalLMOutputWithCrossAttentions
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
+from peft.peft_model import PeftModel
 from transformers import logging as hf_logging
+from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
 
 from typing import Type, Optional, Union, List, Iterable, Tuple, Dict
 
@@ -65,9 +72,6 @@ HOP_SIZE: str = 'hop_size'
 N_FFT: str = 'n_fft'
 N_MEL: str = 'n_mel'
 N_MFCC: str = 'n_mfcc'
-
-
-logger = logging.get_logger(__name__)
 
 
 class AudioProcessor:
@@ -467,10 +471,9 @@ class SpeechLMHeadWrapper(LMHeadWrapper):
                     kwargs.get(INPUT_SPECTROGRAMS, torch.full_like(output[self.module_output][SPECTROGRAMS], torch.nan)),
                     output[self.module_output][SPECTROGRAMS][..., -self.super_wrapper.speech_conversion_factor:]
                 ])
+            output |= {GENERATED_SPECTROGRAMS: generated_spectrograms}
         elif self.post_net is not None:
             output[self.module_output][SPECTROGRAMS] = output[self.module_output][SPECTROGRAMS] + self.post_net(output[self.module_output][SPECTROGRAMS])
-        #
-        output |= {GENERATED_SPECTROGRAMS: generated_spectrograms}
 
         return output
 
@@ -1029,6 +1032,30 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
 
         return input_encodings, target_output
 
+    def configure_optimizers(self):
+        # Build optimiser
+        optimiser_params = self.optimiser_params.copy()
+        optimiser_dtype = optimiser_params.pop('dtype')
+        if isinstance(self.base_model, PeftModel):
+            params = [
+                p for k, p in self.named_parameters()
+                if 'lora' in k or 'speech' in k or 'modality_switch' in k or 'post_net' in k
+            ]
+        else:
+            params = self.parameters()
+        optimiser = optimizer_mapping[optimiser_dtype](params, **optimiser_params)
+        # Check whether LR scheduling is required
+        if len(self.lr_scheduler_params) > 0:
+            lr_scheduler_params = self.lr_scheduler_params.copy()
+            lr_scheduler_dtype = lr_scheduler_params.pop('dtype')
+            lr_scheduler_interval = lr_scheduler_params.pop('interval')
+            if lr_scheduler_params == 'step':
+                lr_scheduler_params['steps_per_epoch'] = int(math.ceil(self._steps_per_epoch))
+            lr_scheduler = lr_scheduler_mapping[lr_scheduler_dtype](optimiser, **lr_scheduler_params)
+            return [optimiser], [{'scheduler': lr_scheduler, 'interval': lr_scheduler_interval}]
+        else:
+            return optimiser
+
     def _step(
             self,
             split: str,
@@ -1049,13 +1076,93 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         # Log LM loss
         self.log(f'Loss/{split.capitalize()}', loss)
         for k, v in loss_components.items():
-            self.log(f'{k.split('_').capitalize()}/{split.capitalize()}', v)
+            self.log(f'{k.capitalize()}/{split.capitalize()}', v)
 
         return wrapper_output, loss
 
-    def fine_tune(self, data_splits, *_, **kwargs) -> 'CausalLMWrapper':
+    def _eval_step(self, split: str, mini_batch, mini_batch_idx: int):
+        # Unpack the encoding and the target labels
+        input_encodings, target_output = mini_batch
+        # Run generic forward step
+        output, loss = self._step(split, mini_batch, mini_batch_idx)
+        # Take logits
+        logits: torch.tensor = output[LOGITS]
+        # Shift logits to exclude the last element
+        logits = logits[..., :-1, :].contiguous()
+        # shift labels to exclude the first element
+        labels = target_output[TOKEN_LABELS][..., 1:].contiguous()
+
+        # Log Perplexity
+        for metric_id, metric in self.metrics.items():
+            if metric_id == 'Perplexity':
+                metric.update(logits, labels)
+            else:
+                # TODO manage generative metrics
+                pass
+
+        return loss
+
+    def fine_tune(
+            self,
+            data_splits: Dict[str, Dataset],
+            *_,
+            dir_path: Optional[str] = None,
+            callbacks: Optional[Dict[str, pl_callbacks.Callback]] = None,
+            loggers: Optional[Iterable[pl_loggers.Logger]] = None
+    ) -> 'CausalLMWrapper':
         # Fit audio scaler
-        self.audio_processor.fit_scaler(data_splits['train'].get_audio_scaling_samples())
-        logging.info("Data loaders instantiated")
-        # Run training routine
-        return super().fine_tune(data_splits, **kwargs)
+        # self.audio_processor.fit_scaler(data_splits['train'].get_audio_scaling_samples())
+        logger.info("Audio scaler fitting completed")
+        # Create data loaders
+        data_loaders: Dict[str, DataLoader] = {
+            split: DataLoader(
+                data,
+                collate_fn=self.collate,
+                shuffle=split == 'train' and len(data) < 10000,
+                # TODO find better solution to shuffling large data sets
+                **self.data_loader_params[split]
+            )
+            for split, data in data_splits.items()
+        }
+        logger.info("Data loaders instantiated")
+        #
+        self._steps_per_epoch = len(data_loaders['train']) / self.trainer_params.get('accumulate_grad_batches', 1)
+        # Create Trainer
+        self.configure_metrics()
+        self.disable_benchmarking()
+        trainer = L.Trainer(
+            default_root_dir=dir_path,
+            **self.trainer_params,
+            callbacks=list(callbacks.values()),
+            logger=loggers
+        )
+        logger.info("Trainer instantiated")
+        # Train neural network
+        self.enable_wrapper()
+        self.train()
+        start_time = datetime.now()
+        logger.info("Training started")
+        trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])
+        stop_time = datetime.now()
+        logger.info(f"Training completed (elapsed time: {stop_time - start_time})")
+        # Load torch checkpoint
+        if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
+            if os.path.exists(callbacks['model_checkpoint'].best_model_path):
+                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
+                self.load_state_dict(checkpoint['state_dict'])
+                logger.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
+            else:
+                logger.info(f"No checkpoint to restore")
+        # Test neural network
+        start_time = datetime.now()
+        logger.info("Validation started")
+        trainer.validate(self, dataloaders=data_loaders['validation'])
+        stop_time = datetime.now()
+        logger.info(f"Validation completed (elapsed time: {stop_time - start_time})")
+        start_time = datetime.now()
+        logger.info("Testing started")
+        trainer.test(self, dataloaders=data_loaders['test'])
+        stop_time = datetime.now()
+        logger.info(f"Testing completed (elapsed time: {stop_time - start_time})")
+
+        return self
