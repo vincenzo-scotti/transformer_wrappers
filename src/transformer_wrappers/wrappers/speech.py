@@ -74,6 +74,15 @@ N_MEL: str = 'n_mel'
 N_MFCC: str = 'n_mfcc'
 
 
+class LayerNorm1d(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.norm = nn.LayerNorm(*args, **kwargs)
+        
+    def forward(self, x):
+        return self.norm(x.transpose(-1, -2)).transpose(-1, -2)
+
+
 class AudioProcessor:
     STANDARD_SCALER_FILE: str = 'audio_scaler.pickle'
 
@@ -359,12 +368,12 @@ class SpeechTransformerWrapper(TransformerWrapper):
                         **configs,
                         bias=False,
                         padding='same' if configs.get('stride', 1) == 1 else 'valid',
-                        dtype=model.base_model.dtype,
+                        dtype=model.dtype,
                         device=model.device
                     ),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1),
-                    nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                    LayerNorm1d(configs['out_channels'], device=model.device),
                 ]
             ]
         )
@@ -622,12 +631,12 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                         **configs,
                         bias=False,
                         padding='same' if configs.get('stride', 1) == 1 else 'valid',
-                        dtype=model.base_model.dtype,
+                        dtype=model.dtype,
                         device=model.device
                     ),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1),
-                    nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                    LayerNorm1d(configs['out_channels'], device=model.device),
                 ]
             ]
         )
@@ -664,11 +673,11 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 module
                 for i, configs in enumerate(speech_decoder_configs)
                 for module in [
-                    nn.ConvTranspose1d(**configs, bias=False, dtype=model.base_model.dtype, device=model.device)
+                    nn.ConvTranspose1d(**configs, bias=False, dtype=model.dtype, device=model.device)
                 ] + ([
                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                    nn.Dropout(0.1),
-                   nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                   LayerNorm1d(configs['out_channels'], device=model.device),
                 ] if i < len(speech_decoder_configs) - 1 else [])
             ]
         )
@@ -681,7 +690,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             ))
         #
         modality_switch = torch.nn.Linear(
-            model.config.hidden_size, 1, dtype=model.base_model.dtype, device=model.device
+            model.config.hidden_size, 1, dtype=model.dtype, device=model.device
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
@@ -711,13 +720,13 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                             **configs,
                             bias=False,
                             padding='same' if configs.get('stride', 1) == 1 else 'valid',
-                            dtype=model.base_model.dtype,
+                            dtype=model.dtype,
                             device=model.device
                         )
                     ] + ([
                         ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                         nn.Dropout(0.5),
-                        nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                        LayerNorm1d(configs['out_channels'], device=model.device),
                     ] if i < len(post_net_configs) - 1 else [])
                 ]
             )
