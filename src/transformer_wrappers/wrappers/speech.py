@@ -345,7 +345,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
             if i == 0:
                 speech_encoder_configs[i] |= {'in_channels': audio_processor.channels}
             else:
-                speech_encoder_configs[i] |= {'in_channels': speech_encoder_configs[i-1]['out_channels']}
+                speech_encoder_configs[i] |= {'in_channels': speech_encoder_configs[i - 1]['out_channels']}
             if i == len(speech_encoder_configs) - 1:
                 speech_encoder_configs[i] |= {'out_channels': model.config.hidden_size}
             if 'stride' not in speech_encoder_configs[i]:
@@ -353,17 +353,20 @@ class SpeechTransformerWrapper(TransformerWrapper):
         speech_encoder = nn.Sequential(
             *[
                 module
-                for configs in speech_encoder_configs[:-1]
+                for configs in speech_encoder_configs
                 for module in [
-                    nn.BatchNorm1d(configs['in_channels']),
                     nn.Conv1d(
-                        **configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid', dtype=model.base_model.dtype
+                        **configs,
+                        bias=False,
+                        padding='same' if configs.get('stride', 1) == 1 else 'valid',
+                        dtype=model.base_model.dtype,
+                        device=model.device
                     ),
-                    ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
-                    nn.Dropout(0.1)
+                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
+                    nn.Dropout(0.1),
+                    nn.BatchNorm1d(configs['out_channels'], device=model.device),
                 ]
-            ],
-            nn.Conv1d(**speech_encoder_configs[-1])
+            ]
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -613,17 +616,20 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         speech_encoder = nn.Sequential(
             *[
                 module
-                for configs in speech_encoder_configs[:-1]
+                for configs in speech_encoder_configs
                 for module in [
-                    nn.BatchNorm1d(configs['in_channels']),
                     nn.Conv1d(
-                        **configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid', dtype=model.base_model.dtype
+                        **configs,
+                        bias=False,
+                        padding='same' if configs.get('stride', 1) == 1 else 'valid',
+                        dtype=model.base_model.dtype,
+                        device=model.device
                     ),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
-                    nn.Dropout(0.1)
+                    nn.Dropout(0.1),
+                    nn.BatchNorm1d(configs['out_channels'], device=model.device),
                 ]
-            ],
-            nn.Conv1d(**speech_encoder_configs[-1])
+            ]
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechEmbeddingWrapper.SPEECH_ENCODER_FILE)
@@ -656,15 +662,15 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         speech_decoder = nn.Sequential(
             *[
                 module
-                for configs in speech_decoder_configs[:-1]
+                for i, configs in enumerate(speech_decoder_configs)
                 for module in [
-                    nn.BatchNorm1d(configs['in_channels']),
-                    nn.ConvTranspose1d(**configs, bias=False, dtype=model.base_model.dtype),
-                    ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
-                    nn.Dropout(0.1)
-                ]
-            ],
-            nn.ConvTranspose1d(**speech_decoder_configs[-1], dtype=model.base_model.dtype)
+                    nn.ConvTranspose1d(**configs, bias=False, dtype=model.base_model.dtype, device=model.device)
+                ] + ([
+                   ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
+                   nn.Dropout(0.1),
+                   nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                ] if i < len(speech_decoder_configs) - 1 else [])
+            ]
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.SPEECH_DECODER_FILE)
@@ -674,7 +680,9 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 weights_only=True
             ))
         #
-        modality_switch = torch.nn.Linear(model.config.hidden_size, 1, dtype=model.base_model.dtype)
+        modality_switch = torch.nn.Linear(
+            model.config.hidden_size, 1, dtype=model.base_model.dtype, device=model.device
+        )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
         ):
@@ -697,18 +705,20 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             post_net = nn.Sequential(
                 *[
                     module
-                    for configs in post_net_configs
+                    for i, configs in enumerate(post_net_configs)
                     for module in [
-                        nn.BatchNorm1d(configs['in_channels']),
                         nn.Conv1d(
                             **configs,
                             bias=False,
                             padding='same' if configs.get('stride', 1) == 1 else 'valid',
-                            dtype=model.base_model.dtype
-                        ),
+                            dtype=model.base_model.dtype,
+                            device=model.device
+                        )
+                    ] + ([
                         ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
-                        nn.Dropout(0.5)
-                    ]
+                        nn.Dropout(0.5),
+                        nn.BatchNorm1d(configs['out_channels'], device=model.device),
+                    ] if i < len(post_net_configs) - 1 else [])
                 ]
             )
             if os.path.exists(
