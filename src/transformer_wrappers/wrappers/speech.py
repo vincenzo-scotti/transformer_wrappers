@@ -226,7 +226,7 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
         # Check whether there are spectrograms to embed
         if input_spectrograms is not None:
             #
-            spectrogram_embeddings = self.speech_encoder.forward(input_spectrograms)
+            spectrogram_embeddings = self.speech_encoder.forward(input_spectrograms.to(output[self.module_output]))
             output[self.module_output][speech_mask] += spectrogram_embeddings.transpose(-1, -2)[speech_mask]
         #
         output |= {
@@ -356,7 +356,9 @@ class SpeechTransformerWrapper(TransformerWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid'),
+                    nn.Conv1d(
+                        **configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid', dtype=model.base_model.dtype
+                    ),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU()),
                     nn.Dropout(0.1)
                 ]
@@ -614,7 +616,9 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 for configs in speech_encoder_configs[:-1]
                 for module in [
                     nn.BatchNorm1d(configs['in_channels']),
-                    nn.Conv1d(**configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid'),
+                    nn.Conv1d(
+                        **configs, bias=False, padding='same' if configs.get('stride', 1) == 1 else 'valid', dtype=model.base_model.dtype
+                    ),
                     ACT2FN.get(getattr(model.config, act_key), nn.GELU)(),
                     nn.Dropout(0.1)
                 ]
@@ -758,7 +762,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         # Shift predictions to exclude the last element
         predicted = predicted[..., :-self.speech_conversion_factor]
         # shift targets to exclude the first element
-        target = target[..., self.speech_conversion_factor:]
+        target = target[..., self.speech_conversion_factor:].to(predicted)
         # Get valid output maks
         mask = ~target.isnan()
         predicted = predicted[mask]
