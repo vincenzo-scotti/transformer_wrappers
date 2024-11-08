@@ -84,7 +84,7 @@ class LayerNorm1d(nn.Module):
 
 
 class AudioProcessor:
-    STANDARD_SCALER_FILE: str = 'audio_scaler.pickle'
+    STANDARD_SCALER_FILE: str = 'audio_scaler.pkl'
 
     def __init__(
             self,
@@ -93,7 +93,8 @@ class AudioProcessor:
             hop_size: Optional[float] = 0.01,  # In seconds, defaults to window size
             n_fft: int = 512,
             n_mel: Optional[int] = 80,  # Typical value is 80 if not None, change to match speech embeddings requirements
-            n_mfcc: Optional[int] = None  # Typical value is 12 if not None, change to match speech embedding requirements
+            n_mfcc: Optional[int] = None,  # Typical value is 12 if not None, change to match speech embedding requirements
+            pre_trained_scaler_path: Optional[str] = None,
     ):
         self.sr: int = sr
         self.win_size: float = win_size
@@ -106,6 +107,8 @@ class AudioProcessor:
         self._hop_size_samples: int = int(math.ceil(self.hop_size * self.sr))
         #
         self._scaler: Optional[StandardScaler] = None
+        if pre_trained_scaler_path is not None:
+            self.load_scaler(pre_trained_scaler_path)
 
     @property
     def channels(self) -> int:
@@ -1087,8 +1090,10 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     ) -> Tuple[Dict, torch.Tensor]:
         # Unpack the encoding and the target labels
         input_encodings, target_output = mini_batch
+        # input_encodings = input_encodings.to(self.device)
+        # target_output = {k: v.to(self.device) for k, v in target_output.items()}
         # Compute output
-        wrapper_output = self.forward(**input_encodings)
+        wrapper_output = self.forward(**input_encodings, use_cache=False)
         # Compute LM loss token-wise
         loss, loss_components = self._loss(
             token_logits=wrapper_output[LOGITS],
