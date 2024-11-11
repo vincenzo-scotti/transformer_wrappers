@@ -46,6 +46,7 @@ __all__ = ['AudioProcessor', 'SpeechTransformerWrapper', 'SpeechCausalLMWrapper'
 logger = hf_logging.get_logger(__name__)
 
 AUDIO_TOKEN: str = 'audio_token'
+AUDIO_PROCESSOR_CONFIGS: str = 'audio_processor'
 SPEECH_ENCODER_CONFIGS: str = 'speech_encoder'
 SPEECH_DECODER_CONFIGS: str = 'speech_decoder'
 POST_NET_CONFIGS: str = 'post_net'
@@ -330,12 +331,7 @@ class SpeechTransformerWrapper(TransformerWrapper):
             model.get_input_embeddings().weight.data[old_vocab_size:] = 0.
 
         audio_processor = AudioProcessor(
-            sr=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(SR, 16000),
-            win_size=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(WIN_SIZE, 0.025),
-            hop_size=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(HOP_SIZE, 0.01),
-            n_fft=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_FFT, 512),
-            n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
-            n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
+            **model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(AUDIO_PROCESSOR_CONFIGS, dict())
         )
         if os.path.exists(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE)):
             audio_processor.load_scaler(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE))
@@ -592,12 +588,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 model.get_output_embeddings().bias.data[old_vocab_size:] = 0.
 
         audio_processor = AudioProcessor(
-            sr=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(SR, 16000),
-            win_size=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(WIN_SIZE, 0.025),
-            hop_size=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(HOP_SIZE, 0.01),
-            n_fft=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_FFT, 512),
-            n_mel=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MEL, 128),
-            n_mfcc=model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(N_MFCC)
+            **model.config.task_specific_params[cls.WRAPPER_CONFIGS_KEY].get(AUDIO_PROCESSOR_CONFIGS, dict())
         )
         if os.path.exists(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE)):
             audio_processor.load_scaler(os.path.join(pretrained_model_name_or_path, AudioProcessor.STANDARD_SCALER_FILE))
