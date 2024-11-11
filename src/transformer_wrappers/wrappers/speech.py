@@ -146,7 +146,7 @@ class AudioProcessor:
                 )
                 spec = librosa.power_to_db(np.abs(spec) ** 2, ref=np.max)
                 if self._scaler is not None:
-                    spec = self._scaler.transform(spec)
+                    spec = self._scaler.transform(spec.transpose(-1, -2)).transpose(-1, -2)
 
                 return spec
             elif self.n_mel is not None and self.n_mfcc is None:
@@ -159,7 +159,7 @@ class AudioProcessor:
                 )
                 mel_spec = librosa.power_to_db(mel_spec, ref=np.max)
                 if self._scaler is not None:
-                    mel_spec = self._scaler.transform(mel_spec)
+                    mel_spec = self._scaler.transform(mel_spec.transpose(-1, -2)).transpose(-1, -2)
 
                 return mel_spec
             elif self.n_mel is not None and self.n_mfcc is not None:
@@ -173,7 +173,7 @@ class AudioProcessor:
                     n_mels=self.n_mel
                 )
                 if self._scaler is not None:
-                    mfcc = self._scaler.transform(mfcc)
+                    mfcc = self._scaler.transform(mfcc.transpose(-1, -2)).transpose(-1, -2)
 
                 return mfcc
             else:
