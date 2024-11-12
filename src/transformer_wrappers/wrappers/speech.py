@@ -239,6 +239,8 @@ class SpeechEmbeddingWrapper(EmbeddingWrapper):
         # Check whether there are spectrograms to embed
         if input_spectrograms is not None:
             #
+            input_spectrograms[input_spectrograms.isnan()] = input_spectrograms[~input_spectrograms.isnan()].min()
+            #
             spectrogram_embeddings = self.speech_encoder.forward(input_spectrograms.to(output[self.module_output]))
             output[self.module_output][speech_mask] += spectrogram_embeddings.transpose(-1, -2)[speech_mask]
         #
