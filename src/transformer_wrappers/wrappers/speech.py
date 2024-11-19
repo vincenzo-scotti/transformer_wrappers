@@ -1149,7 +1149,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             split: DataLoader(
                 data,
                 collate_fn=self.collate,
-                shuffle=split == 'train' and len(data) < 10000,
+                shuffle=split == 'train', # and len(data) < 10000,
                 # TODO find better solution to shuffling large data sets
                 **self.data_loader_params[split]
             )
