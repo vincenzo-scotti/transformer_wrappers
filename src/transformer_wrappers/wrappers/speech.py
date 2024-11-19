@@ -1005,15 +1005,25 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 ),
                 torch.nan
             )
-            audio_stream[
-                torch.repeat_interleave(
-                    input_encodings.input_ids == self.audio_token_id,
-                    self.speech_conversion_factor,
-                    dim=-1
-                ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
-            ] = torch.hstack([spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]).ravel()
-            if audio_stream.size(-1) > input_encodings.input_ids.size(-1) * self.speech_conversion_factor:  # Apply truncation
-                audio_stream = audio_stream[..., :input_encodings.input_ids.size(-1) * self.speech_conversion_factor]
+            if input_encodings.input_ids.size(1) >= self.tokenizer.model_max_length:
+                for i in range(input_encodings.input_ids.size(0)):
+                    mask = torch.repeat_interleave(
+                            input_encodings.input_ids[i] == self.audio_token_id,
+                            self.speech_conversion_factor,
+                            dim=-1
+                        ).unsqueeze(0).repeat((self.audio_processor.channels, 1))
+                    audio_stream[i, mask] = torch.hstack(
+                        [spec for spec in spectrograms[i]]
+                    )[:, :mask.sum() // self.audio_processor.channels].ravel()
+            else:
+                mask = torch.repeat_interleave(
+                        input_encodings.input_ids == self.audio_token_id,
+                        self.speech_conversion_factor,
+                        dim=-1
+                    ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
+                audio_stream[mask] = torch.hstack(
+                    [spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]
+                ).ravel()
             input_encodings[INPUT_SPECTROGRAMS] = audio_stream
 
         return input_encodings
