@@ -9,11 +9,15 @@ from typing import Optional, Dict, List, Union, Iterable, Tuple
 
 
 class MozillaCommonVoice(Dataset):
+    DURATIONS_FILE: str = 'clip_durations.tsv'
+    MAX_DURATION: int = 12000
+    MIN_DURATION: int = 250
     _split_mapping: Dict[str, str] = {
         'train': 'train.tsv',
         'validation': 'dev.tsv',
         'test': 'test.tsv'
     }
+
 
     # TODO make this code more general
     def __init__(
@@ -43,6 +47,9 @@ class MozillaCommonVoice(Dataset):
             for language in self.languages:
                 if os.path.exists(os.path.join(path, language, self._split_mapping[self.split])):
                     df = pd.read_csv(os.path.join(path, language, self._split_mapping[self.split]), sep='\t')
+                    df_durations = pd.read_csv(os.path.join(path, language, self.DURATIONS_FILE), sep='\t')
+                    df = df.join(df_durations.rename(columns={'clip': 'path'}).set_index('path'), on='path')
+                    df = df[(df['duration[ms]'] > self.MIN_DURATION) & (df['duration[ms]'] <= self.MAX_DURATION)]
                     fraction = self.subsample.get(language, 1.0)
                     if 0.0 < fraction < 1.0:
                         gss = GroupShuffleSplit(n_splits=1, train_size=fraction, random_state=self.random_seed)
