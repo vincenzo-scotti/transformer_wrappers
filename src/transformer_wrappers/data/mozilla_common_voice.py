@@ -10,6 +10,7 @@ from typing import Optional, Dict, List, Union, Iterable, Tuple
 
 class MozillaCommonVoice(Dataset):
     DURATIONS_FILE: str = 'clip_durations.tsv'
+    MAX_CHAR: int = 200
     MAX_DURATION: int = 12000
     MIN_DURATION: int = 250
     _split_mapping: Dict[str, str] = {
@@ -50,6 +51,7 @@ class MozillaCommonVoice(Dataset):
                     df_durations = pd.read_csv(os.path.join(path, language, self.DURATIONS_FILE), sep='\t')
                     df = df.join(df_durations.rename(columns={'clip': 'path'}).set_index('path'), on='path')
                     df = df[(df['duration[ms]'] > self.MIN_DURATION) & (df['duration[ms]'] <= self.MAX_DURATION)]
+                    df = df[df.apply(lambda r: len(r['sentence']) <= self.MAX_CHAR, axis=1)]
                     fraction = self.subsample.get(language, 1.0)
                     if 0.0 < fraction < 1.0:
                         gss = GroupShuffleSplit(n_splits=1, train_size=fraction, random_state=self.random_seed)
