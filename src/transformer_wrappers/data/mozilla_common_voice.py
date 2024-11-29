@@ -10,9 +10,9 @@ from typing import Optional, Dict, List, Union, Iterable, Tuple
 
 class MozillaCommonVoice(Dataset):
     DURATIONS_FILE: str = 'clip_durations.tsv'
-    MAX_CHAR: int = 200
-    MAX_DURATION: int = 12000
-    MIN_DURATION: int = 250
+    MAX_CHAR: int = 100  # 200
+    MAX_DURATION: int = 10000  # 12000
+    MIN_DURATION: int = 1000  # 250
     _split_mapping: Dict[str, str] = {
         'train': 'train.tsv',
         'validation': 'dev.tsv',

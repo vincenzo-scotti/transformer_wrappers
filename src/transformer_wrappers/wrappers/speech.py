@@ -686,7 +686,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             ))
         #
         modality_switch = torch.nn.Linear(
-            model.config.hidden_size, 1, dtype=model.dtype, device=model.device
+            model.config.hidden_size, 1, bias=False, dtype=model.dtype, device=model.device
         )
         if os.path.exists(
                 os.path.join(pretrained_model_name_or_path, SpeechLMHeadWrapper.MODALITY_SWITCH_FILE)
@@ -1179,8 +1179,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         # Load torch checkpoint
         if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
             if os.path.exists(callbacks['model_checkpoint'].best_model_path):
-                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
-                self.load_state_dict(checkpoint['state_dict'])
+                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path, weights_only=True)
+                self.load_state_dict(checkpoint['state_dict'], strict=False)
                 logger.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
             else:
                 logger.info(f"No checkpoint to restore")
