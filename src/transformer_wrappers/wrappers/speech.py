@@ -1053,11 +1053,20 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         return {TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: target_spectrogram}
 
     def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]]:
+        logger.debug('Collate started')
         input_encodings = self.prepare_input(
             [sample['text'] for sample in samples],
             [sample.get('audio_file_paths', list()) for sample in samples]
         )
+        logger.debug(
+            f'Input encoded - Input ids shape: {input_encodings.input_ids.size()}, '
+            f'Spectrogram shape: {input_encodings.input_spectrograms.size() if input_encodings.input_spectrograms is not None else None}'
+        )
         target_output = self.prepare_output(input_data=input_encodings)
+        logger.debug(
+            'Output encoded'
+        )
+        logger.debug('Collate completed')
 
         return input_encodings, target_output
 
@@ -1091,6 +1100,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             mini_batch: Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]],
             mini_batch_idx: int
     ) -> Tuple[Dict, torch.Tensor]:
+        logger.debug('Step started')
         # Unpack the encoding and the target labels
         input_encodings, target_output = mini_batch
         # input_encodings = input_encodings.to(self.device)
@@ -1108,6 +1118,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         self.log(f'Loss/{split.capitalize()}', loss)
         for k, v in loss_components.items():
             self.log(f'{k.capitalize()}/{split.capitalize()}', v)
+        logger.debug('Collate completed')
 
         return wrapper_output, loss
 
@@ -1173,6 +1184,16 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         self.train()
         start_time = datetime.now()
         logger.info("Training started")
+
+        # from tqdm import tqdm
+        # for i, mini_batch in tqdm(enumerate(data_loaders['train'])):
+        #     input_encoding, target_output = mini_batch
+        #     input_encoding = input_encoding.to('cuda')
+        #     target_output = {k: v.to('cuda') for k, v in target_output.items()}
+        #     _, loss = self._step('train', (input_encoding, target_output), i)
+        #     loss.backward()
+        # exit(0)
+
         trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])
         stop_time = datetime.now()
         logger.info(f"Training completed (elapsed time: {stop_time - start_time})")
