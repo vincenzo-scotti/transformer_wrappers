@@ -1053,20 +1053,20 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         return {TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: target_spectrogram}
 
     def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]]:
-        logger.debug('Collate started')
+        logger.info('Collate started')
         input_encodings = self.prepare_input(
             [sample['text'] for sample in samples],
             [sample.get('audio_file_paths', list()) for sample in samples]
         )
-        logger.debug(
+        logger.info(
             f'Input encoded - Input ids shape: {input_encodings.input_ids.size()}, '
             f'Spectrogram shape: {input_encodings.input_spectrograms.size() if input_encodings.input_spectrograms is not None else None}'
         )
         target_output = self.prepare_output(input_data=input_encodings)
-        logger.debug(
+        logger.info(
             'Output encoded'
         )
-        logger.debug('Collate completed')
+        logger.info('Collate completed')
 
         return input_encodings, target_output
 
@@ -1100,7 +1100,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             mini_batch: Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]],
             mini_batch_idx: int
     ) -> Tuple[Dict, torch.Tensor]:
-        logger.debug('Step started')
+        logger.info('Step started')
         # Unpack the encoding and the target labels
         input_encodings, target_output = mini_batch
         # input_encodings = input_encodings.to(self.device)
@@ -1118,7 +1118,7 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         self.log(f'Loss/{split.capitalize()}', loss)
         for k, v in loss_components.items():
             self.log(f'{k.capitalize()}/{split.capitalize()}', v)
-        logger.debug('Collate completed')
+        logger.info('Collate completed')
 
         return wrapper_output, loss
 
