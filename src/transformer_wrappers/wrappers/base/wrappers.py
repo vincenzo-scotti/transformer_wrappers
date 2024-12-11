@@ -1,20 +1,12 @@
 import os
-import logging
-from datetime import datetime
 import inspect
 from copy import deepcopy
 
-import math
-import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import lightning as L
-from lightning.pytorch import callbacks as pl_callbacks
-from lightning.pytorch import loggers as pl_loggers
-from torchmetrics import MetricCollection
+from torch.nn import Parameter
 
-from transformers import PreTrainedModel, PreTrainedTokenizer, BatchEncoding
+from transformers import PreTrainedModel
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 from transformers import GemmaPreTrainedModel, GPT2PreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, GPTNeoXPreTrainedModel, Gemma2PreTrainedModel
 from transformers.models.gpt2.modeling_gpt2 import GPT2Block
@@ -30,6 +22,8 @@ from transformers.modeling_attn_mask_utils import (
     _prepare_4d_causal_attention_mask_for_sdpa, _prepare_4d_causal_attention_mask
 )
 from transformers import logging as hf_logging
+from trl import SFTTrainer
+from transformers import DataCollator
 
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig, prepare_model_for_kbit_training, get_peft_model, AutoPeftModel, AutoPeftModelForCausalLM
@@ -37,10 +31,9 @@ from peft.peft_model import PeftModel
 
 from .constants import *
 from .dtypes import *
-from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
-from transformer_wrappers.utils.metrics import PPLScore
+from .collators import *
 
-from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Any
+from typing import Union, Optional, Type, Tuple, Dict, List, Iterable, Any, Iterator
 
 # TODO fix base model/module properties and wrapper enable/disable methods
 # TODO implement gradient checkpointing
@@ -66,8 +59,6 @@ __all__ = [
 logger = hf_logging.get_logger(__name__)
 
 
-#SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel)
-#SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer)
 SHARED_STRUCTURE_MODELS = (GemmaPreTrainedModel, LlamaPreTrainedModel, MistralPreTrainedModel, Gemma2PreTrainedModel)
 SHARED_STRUCTURE_LAYERS = (GemmaDecoderLayer, LlamaDecoderLayer, MistralDecoderLayer, Gemma2DecoderLayer)
 
@@ -1078,6 +1069,10 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     supports_gradient_checkpointing = True
 
+    # Trainer utilities
+    _collator_dtype: Optional[Type[DataCollator]] = None
+    _trainer_dtype: Optional[Type[SFTTrainer]] = None
+
     def __init__(
             self,
             model: PreTrainedModel,
@@ -1161,7 +1156,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             tokenizer_args: Optional[Tuple] = None,
             tokenizer_kwargs: Optional[Dict] = None,
             **wrapper_kwargs
-    ):
+    ) -> 'PreTrainedModelWrapper':
         model, tokenizer = cls._load_pretrained(
             pretrained_model_name_or_path,
             model_args=model_args,
@@ -1243,6 +1238,30 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     def disable_benchmarking(self):
         self._benchmarking = False
+
+    def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
+        if isinstance(self.base_model, PeftModel):
+            return (p for k, p in self.named_parameters(recurse=recurse))
+        else:
+            return super().parameters(recurse=recurse)
+
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[Tuple[str, Parameter]]:
+        if isinstance(self.base_model, PeftModel):
+            return (
+                k, p
+                for k, p in super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
+                if 'lora' in k
+            )
+        else:
+            return super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
+
+    def get_data_collator(self, *args, **kwargs) -> DataCollator:
+        return self._collator_dtype(self.tokenizer, *args, **kwargs)
+
+    def get_trainer(self, *args, **kwargs) -> SFTTrainer:
+        return self._trainer_dtype(*args, model=self, **kwargs)
 
     def _wrapped_forward(self, **kwargs):
         # Model forward
@@ -1608,13 +1627,9 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     _transformer_wrapper: Tuple[TransformerWrapper]
     _lm_head_wrapper: Tuple[LMHeadWrapper]
 
-    # Lightning module parameters for fine-tuning
-    optimiser_params: Dict
-    lr_scheduler_params: Dict
-    trainer_params: Dict
-    data_loader_params: Dict
-    metrics: Optional[MetricCollection]
-    _steps_per_epoch: Optional[int]
+    # Trainer utilities
+    _collator_dtype: Optional[Type[DataCollator]] = CausalLMDataCollator
+    _trainer_dtype: Optional[Type[SFTTrainer]] = SFTTrainer
 
     def _post_init_operations(self, *args, **kwargs):
         # Attribute names
@@ -1627,14 +1642,6 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
         self._lm_head_wrapper: Tuple[LMHeadWrapper] = self._lm_head_dtype(
             getattr(self.internal_model, self._lm_head_attr.value), super_wrapper=self
         ),
-
-        # Lightning module parameters for fine-tuning
-        self.optimiser_params: Dict = dict()
-        self.lr_scheduler_params: Dict = dict()
-        self.trainer_params: Dict = dict()
-        self.data_loader_params: Dict = dict()
-        self.metrics: Optional[MetricCollection] = None
-        self._steps_per_epoch: Optional[int] = None
 
     def _get_transformer_attr(self) -> LMTransformerAttr:
         return _get_module_attr_name(self.internal_model, LMTransformerAttr)
@@ -1701,6 +1708,12 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
     @property
     def lm_head_wrapper(self):
         return self._lm_head_wrapper[0]
+
+    def get_input_embeddings(self):
+        return self.transformer_wrapper.get_input_embeddings()
+
+    def get_data_collator(self, *args, **kwargs) -> DataCollator:
+        return super().get_data_collator(self.tokenizer, *args, **kwargs)
 
     def _wrapped_forward(self, **kwargs):
         #
@@ -1881,210 +1894,3 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             inputs |= wrapper_kwargs
 
         return inputs
-
-    def get_input_embeddings(self):
-        return self.transformer_wrapper.get_input_embeddings()
-
-    # TODO implement other PreTrainedModel methods
-
-    # Lightning Module
-
-    def set_fine_tuning_params(self, **kwargs):
-        for k, v in kwargs.items():
-            setattr(self, k, v)
-
-    def configure_optimizers(self):
-        # Build optimiser
-        optimiser_params = self.optimiser_params.copy()
-        optimiser_dtype = optimiser_params.pop('dtype')
-        if isinstance(self.base_model, PeftModel):
-            params = (p for k, p in self.named_parameters() if 'lora' in k)
-        else:
-            params = self.parameters()
-        optimiser = optimizer_mapping[optimiser_dtype](params, **optimiser_params)
-        # Check whether LR scheduling is required
-        if len(self.lr_scheduler_params) > 0:
-            lr_scheduler_params = self.lr_scheduler_params.copy()
-            lr_scheduler_dtype = lr_scheduler_params.pop('dtype')
-            lr_scheduler_interval = lr_scheduler_params.pop('interval')
-            if lr_scheduler_params == 'step':
-                lr_scheduler_params['steps_per_epoch'] = int(math.ceil(self._steps_per_epoch))
-            lr_scheduler = lr_scheduler_mapping[lr_scheduler_dtype](optimiser, **lr_scheduler_params)
-            return [optimiser], [{'scheduler': lr_scheduler, 'interval': lr_scheduler_interval}]
-        else:
-            return optimiser
-
-    def configure_metrics(self):
-        metrics = {'Perplexity': PPLScore()}
-        # metrics |= {
-        #         f'BLEU-{n + 1}': BLEUScore(n_gram_size=n + 1) for n in range(4)
-        #     } | {
-        #         'F1': F1Score()
-        #     } | {
-        #         f'Distinct-{n + 1}': DistinctNScore(normalisation='corpus', n_gram_size=n + 1) for n in range(2)
-        #     }
-
-        self.metrics = MetricCollection(metrics)
-
-    def prepare_input(self, text: Iterable[str]) -> BatchEncoding:
-        return self.tokenizer(text, return_tensors='pt', padding=True, add_special_tokens=False)
-
-    def prepare_output(self, text: Iterable[str]) -> torch.Tensor:
-        output_ids, attention_mask = self.tokenizer(
-            text, return_tensors='pt', padding=True, add_special_tokens=False
-        ).values()
-        output_ids[~attention_mask.bool()] = -100
-
-        return output_ids
-
-    def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, torch.Tensor]:
-        return (
-            self.prepare_input([sample['text'] for sample in samples]),
-            self.prepare_output([sample['text'] for sample in samples])
-        )
-
-    @staticmethod
-    def _loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-        # Shift logits to exclude the last element
-        logits = logits[..., :-1, :].contiguous()
-        # shift labels to exclude the first element
-        labels = labels[..., 1:].contiguous()
-        # Compute LM loss token-wise
-        loss: torch.Tensor = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
-
-        return loss
-
-    def _step(
-            self, split: str, mini_batch: Tuple[BatchEncoding, torch.Tensor], mini_batch_idx: int
-    ) -> Tuple[Dict, torch.Tensor]:
-        # Unpack the encoding and the target labels
-        input_encodings, labels = mini_batch
-        # Compute output
-        wrapper_output = self.forward(**input_encodings)
-        # Compute LM loss token-wise
-        loss: torch.Tensor = self._loss(wrapper_output.logits, labels)
-
-        # Log LM loss
-        self.log(f'Loss/{split.capitalize()}', loss)
-
-        return wrapper_output, loss
-
-    def training_step(self, mini_batch, mini_batch_idx: int) -> torch.tensor:
-        # Run generic forward step
-        output, loss = self._step('Train', mini_batch, mini_batch_idx)
-
-        return loss
-
-    def _eval_step(self, split: str, mini_batch, mini_batch_idx: int):
-        # Unpack the encoding and the target labels
-        input_encodings, labels = mini_batch
-        # Run generic forward step
-        output, loss = self._step(split, mini_batch, mini_batch_idx)
-        # Take logits
-        logits: torch.tensor = output.logits
-        # Shift logits to exclude the last element
-        logits = logits[..., :-1, :].contiguous()
-        # shift labels to exclude the first element
-        labels = labels[..., 1:].contiguous()
-
-        # Log Perplexity
-        for metric_id, metric in self.metrics.items():
-            if metric_id == 'Perplexity':
-                metric.update(logits, labels)
-            else:
-                # TODO manage generative metrics
-                pass
-
-        return loss
-
-    def validation_step(self, mini_batch, mini_batch_idx):
-        return self._eval_step('Validation', mini_batch, mini_batch_idx)
-
-    def test_step(self, mini_batch, mini_batch_idx):
-        return self._eval_step('Test', mini_batch, mini_batch_idx)
-
-    def _evaluation_epoch_start(self):
-        self.eval()  # TODO find better solution
-        if self.metrics is not None:
-            for metric in self.metrics.values():
-                metric.reset()
-
-    def on_validation_epoch_start(self):
-        return self._evaluation_epoch_start()
-
-    def on_test_epoch_start(self):
-        return self._evaluation_epoch_start()
-
-    def _evaluation_epoch_end(self, split: str):
-        if self.metrics is not None:
-            for metric_id, metric in self.metrics.items():
-                self.log(f'{metric_id}/{split}', metric.compute())
-        self.train()  # TODO find better solution
-
-    def on_validation_epoch_end(self):
-        return self._evaluation_epoch_end('Validation')
-
-    def on_test_epoch_end(self):
-        return self._evaluation_epoch_end('Test')
-
-    def fine_tune(
-            self,
-            data_splits: Dict[str, Dataset],
-            *_,
-            dir_path: Optional[str] = None,
-            callbacks: Optional[Dict[str, pl_callbacks.Callback]] = None,
-            loggers: Optional[Iterable[pl_loggers.Logger]] = None
-    ) -> 'CausalLMWrapper':
-        # Create data loaders
-        data_loaders: Dict[str, DataLoader] = {
-            split: DataLoader(
-                data,
-                collate_fn=self.collate,
-                shuffle=split == 'train' and len(data) < 10000,
-                # TODO find better solution to shuffling large data sets
-                **self.data_loader_params[split]
-            )
-            for split, data in data_splits.items()
-        }
-        logging.info("Data loaders instantiated")
-        #
-        self._steps_per_epoch = len(data_loaders['train']) / self.trainer_params.get('accumulate_grad_batches', 1)
-        # Create Trainer
-        self.configure_metrics()
-        self.enable_benchmarking()
-        trainer = L.Trainer(
-            default_root_dir=dir_path,
-            **self.trainer_params,
-            callbacks=list(callbacks.values()),
-            logger=loggers
-        )
-        logging.info("Trainer instantiated")
-        # Train neural network
-        self.enable_wrapper()
-        self.train()
-        start_time = datetime.now()
-        logging.info("Training started")
-        trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])
-        stop_time = datetime.now()
-        logging.info(f"Training completed (elapsed time: {stop_time - start_time})")
-        # Load torch checkpoint
-        if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
-            if os.path.exists(callbacks['model_checkpoint'].best_model_path):
-                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path)
-                self.load_state_dict(checkpoint['state_dict'])
-                logging.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
-            else:
-                logging.info(f"No checkpoint to restore")
-        # Test neural network
-        start_time = datetime.now()
-        logging.info("Validation started")
-        trainer.validate(self, dataloaders=data_loaders['validation'])
-        stop_time = datetime.now()
-        logging.info(f"Validation completed (elapsed time: {stop_time - start_time})")
-        start_time = datetime.now()
-        logging.info("Testing started")
-        trainer.test(self, dataloaders=data_loaders['test'])
-        stop_time = datetime.now()
-        logging.info(f"Testing completed (elapsed time: {stop_time - start_time})")
-
-        return self
