@@ -4,7 +4,6 @@ from copy import deepcopy
 
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.nn import Parameter
 
 from transformers import PreTrainedModel
 from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
@@ -1239,7 +1238,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     def disable_benchmarking(self):
         self._benchmarking = False
 
-    def parameters(self, recurse: bool = True) -> Iterator[Parameter]:
+    def parameters(self, recurse: bool = True) -> Iterator[nn.Parameter]:
         if isinstance(self.base_model, PeftModel):
             return (p for k, p in self.named_parameters(recurse=recurse))
         else:
@@ -1247,7 +1246,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
 
     def named_parameters(
         self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
-    ) -> Iterator[Tuple[str, Parameter]]:
+    ) -> Iterator[Tuple[str, nn.Parameter]]:
         if isinstance(self.base_model, PeftModel):
             return (
                 k, p
@@ -1608,7 +1607,7 @@ class LMHeadWrapper(ModuleWrapper):
         return self.base_module.weight
 
 
-class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
+class CausalLMWrapper(PreTrainedModelWrapper):
     _model_name: str = 'causal language model'
     model_output: str = 'causal_language_model_output'
 
@@ -1743,6 +1742,10 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             **kwargs
     ):
         base_model_output = base_model_output or self.is_benchmarking
+        # Extract output
+        logits = kwargs.pop(self.model_output)
+        # Compute loss
+        loss = self._loss(logits, labels) if labels is not None else None
         #
         if base_model_output:
             if hidden_states is not None:
@@ -1752,16 +1755,16 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
             if return_dict:
                 if isinstance(self.internal_model, GPT2PreTrainedModel):
                     return CausalLMOutputWithCrossAttentions(
-                        loss=kwargs.get(self.lm_loss),
-                        logits=kwargs[self.model_output],
+                        loss=loss,
+                        logits=logits,
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
                 elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS + (GPTNeoXPreTrainedModel,)):
                     return CausalLMOutputWithPast(
-                        loss=kwargs.get(self.lm_loss),
-                        logits=kwargs[self.model_output],
+                        loss=loss,
+                        logits=logits,
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
@@ -1775,10 +1778,7 @@ class CausalLMWrapper(PreTrainedModelWrapper, L.LightningModule):
                     ] if v is not None
                 )
         else:
-            #
-            logits = kwargs.pop(self.model_output)
-            loss = self._loss(logits, labels) if labels is not None else None
-            #
+            # Update output dict
             kwargs |= {
                 LOGITS: logits,
                 LOSS: loss,

@@ -1,22 +1,18 @@
 import os
-import logging
-from datetime import datetime
 import pickle
+
+from dataclasses import dataclass
+from typing import Type, Optional, Union, List, Iterable, Tuple, Dict, Any, Iterator
 
 import math
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-import lightning as L
-from lightning.pytorch import callbacks as pl_callbacks
-from lightning.pytorch import loggers as pl_loggers
 
 import librosa
 from sklearn.preprocessing import StandardScaler
 
-from transformers import logging
 from transformers import PreTrainedModel, BatchEncoding
 from transformers import GPT2PreTrainedModel
 from transformers.activations import ACT2FN
@@ -25,9 +21,8 @@ from transformers import BitsAndBytesConfig
 from peft import LoraConfig
 from peft.peft_model import PeftModel
 from transformers import logging as hf_logging
-from transformer_wrappers.optim import optimizer_mapping, lr_scheduler_mapping
 
-from typing import Type, Optional, Union, List, Iterable, Tuple, Dict
+from .base.collators import CausalLMDataCollator
 
 from .base import (
     SHARED_STRUCTURE_MODELS,
@@ -73,6 +68,16 @@ HOP_SIZE: str = 'hop_size'
 N_FFT: str = 'n_fft'
 N_MEL: str = 'n_mel'
 N_MFCC: str = 'n_mfcc'
+
+
+@dataclass
+class CausalSpeechLMOutputWithPast(CausalLMOutputWithPast):
+    spectrograms: Optional[torch.FloatTensor] = None
+
+
+@dataclass
+class CausalSpeechLMOutputWithCrossAttentions(CausalLMOutputWithCrossAttentions):
+    spectrograms: Optional[torch.FloatTensor] = None
 
 
 class LayerNorm1d(nn.Module):
@@ -213,6 +218,125 @@ class AudioProcessor:
     def serialise_scaler(self, path: str):
         with open(path, 'wb') as f:
             pickle.dump(self._scaler, f)
+
+
+@dataclass
+class SpeechCausalLMDataCollator(CausalLMDataCollator):
+    audio_processor: Optional[AudioProcessor] = None
+    audio_token: Optional[str] = None
+    speech_conversion_factor: Optional[int] = None
+
+    def _pad_spectrogram(self, spec: torch.Tensor) -> torch.Tensor:
+        # TODO do padding replicating side slices
+        # TODO add support for cases where there isn't a single convolution with hop length equal to window length
+        n_elements = spec.size(-1)
+        expected_n_elements = int(math.ceil(n_elements / self.speech_conversion_factor)) * self.speech_conversion_factor
+        pad_left = int(math.ceil((expected_n_elements - n_elements) / 2))
+        pad_right = (expected_n_elements - n_elements) // 2
+        spec = F.pad(spec, (pad_left, pad_right), value=spec.min())
+
+        return spec
+
+    def _prepare_input(
+            self,
+            text: Optional[Union[Iterable[str], str]],
+            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None
+    ) -> BatchEncoding:
+        # TODO rework checks on input
+        if isinstance(text, str):
+            return self.prepare_input([text], audio_file_paths=audio_file_paths)
+        #
+        if audio_file_paths is not None:
+            #
+            if isinstance(audio_file_paths, str):
+                return self.prepare_input(text, audio_file_paths=[[audio_file_paths]])
+            elif all(isinstance(elem, str) for elem in audio_file_paths):
+                return self.prepare_input(text, audio_file_paths=[audio_file_paths])
+            #
+            spectrograms = [
+                [
+                    self._pad_spectrogram(torch.tensor(self.audio_processor.encode(file_path)))
+                    for file_path in file_paths
+                ]
+                for file_paths in audio_file_paths
+            ]
+            text = [
+                head + str().join(
+                    self.audio_token * (spec.size(-1) // self.speech_conversion_factor) + split
+                    for spec, split in zip(sequence_spectrograms, splits)
+                )
+                for (head, *splits), sequence_spectrograms in zip(
+                    (sequence_text.split(self.audio_token) for sequence_text in text), spectrograms
+                )
+            ]
+        else:
+            spectrograms = None
+        #
+        input_encodings = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True)  # , add_special_tokens=False)
+        if spectrograms is not None:
+            audio_stream = torch.full(
+                (
+                    input_encodings.input_ids.size(0),
+                    self.audio_processor.channels,
+                    input_encodings.input_ids.size(1) * self.speech_conversion_factor
+                ),
+                torch.nan
+            )
+            if input_encodings.input_ids.size(1) >= self.tokenizer.model_max_length:
+                for i in range(input_encodings.input_ids.size(0)):
+                    mask = torch.repeat_interleave(
+                            input_encodings.input_ids[i] == self.audio_token_id,
+                            self.speech_conversion_factor,
+                            dim=-1
+                        ).unsqueeze(0).repeat((self.audio_processor.channels, 1))
+                    audio_stream[i, mask] = torch.hstack(
+                        [spec for spec in spectrograms[i]]
+                    )[:, :mask.sum() // self.audio_processor.channels].ravel()
+            else:
+                mask = torch.repeat_interleave(
+                        input_encodings.input_ids == self.audio_token_id,
+                        self.speech_conversion_factor,
+                        dim=-1
+                    ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
+                audio_stream[mask] = torch.hstack(
+                    [spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]
+                ).ravel()
+            input_encodings[INPUT_SPECTROGRAMS] = audio_stream
+
+        return input_encodings
+
+
+    def _prepare_output(
+            self,
+            text: Optional[Union[Iterable[str], str]] = None,
+            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None,
+            input_data: Optional[BatchEncoding] = None
+    ) -> Tuple[torch.tensor, Optional[torch.tensor]]:
+        if input_data is None:
+            return self.prepare_output(input_data=self._prepare_input(text, audio_file_paths))
+        else:
+            output_ids = input_data.input_ids.clone()
+            output_ids[input_data.attention_mask == 0] = -100
+            if input_data.get(INPUT_SPECTROGRAMS) is not None:
+                target_spectrogram = input_data.input_spectrograms.clone()
+                target_spectrogram[
+                    ~torch.repeat_interleave(
+                        output_ids == self.audio_token_id, self.speech_conversion_factor, dim=-1
+                    ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
+                ] = torch.nan
+            else:
+                target_spectrogram = None
+
+            return output_ids, target_spectrogram
+
+    def torch_call(self, examples: List[Union[List[int], Any, Dict[str, Any]]]) -> BatchEncoding:
+        batch_encoding = self._prepare_input(
+            [sample['text'] for sample in examples],
+            [sample.get('audio_file_paths', list()) for sample in examples]
+        )
+        batch_encoding[LABELS], batch_encoding[TARGET_SPECTROGRAMS] = self._prepare_output(input_data=batch_encoding)
+
+        return batch_encoding
 
 
 class SpeechEmbeddingWrapper(EmbeddingWrapper):
@@ -806,6 +930,19 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
 
         return loss, {LM_LOSS: lm_loss, SPEC_LOSS: spec_loss} if return_components else loss
 
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[Tuple[str, nn.Parameter]]:
+        if isinstance(self.base_model, PeftModel):
+            return (
+                k, p
+                for k, p in super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
+                if any(tag in k for tag in ('lora', 'speech', 'modality_switch', 'post_net'))
+            )
+        else:
+            return super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
+
+
     def _post_process_output(
             self,
             base_model_output: bool = False,
@@ -818,6 +955,17 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             **kwargs
     ):
         base_model_output = base_model_output or self.is_benchmarking
+        # Extract output
+        model_output = kwargs.pop(self.model_output)
+        logits = model_output.pop(LOGITS)
+        spectrograms = model_output.pop(SPECTROGRAMS)
+        # Compute loss
+        loss, components = self._loss(
+            token_logits=logits,
+            token_labels=labels,
+            predicted_spectrograms=spectrograms,
+            target_spectrograms=kwargs.get(INPUT_SPECTROGRAMS)
+        ) if labels is not None else None, None
         #
         if base_model_output:
             if hidden_states is not None:
@@ -826,17 +974,19 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                 )
             if return_dict:
                 if isinstance(self.internal_model, GPT2PreTrainedModel):
-                    return CausalLMOutputWithCrossAttentions(
-                        loss=kwargs.get(self.lm_loss),
-                        logits=kwargs[self.model_output][LOGITS],
+                    return CausalSpeechLMOutputWithCrossAttentions(
+                        loss=loss,
+                        logits=logits,
+                        spectrograms=spectrograms,
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
                     )
                 elif isinstance(self.internal_model, SHARED_STRUCTURE_MODELS):
-                    return CausalLMOutputWithPast(
-                        loss=kwargs.get(self.lm_loss),
-                        logits=kwargs[self.model_output][LOGITS],
+                    return CausalSpeechLMOutputWithPast(
+                        loss=loss,
+                        logits=logits,
+                        spectrograms=spectrograms,
                         past_key_values=cache,
                         hidden_states=hidden_states,
                         attentions=attention_weights
@@ -855,17 +1005,6 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
                     ] if v is not None
                 )
         else:
-            # Extract output
-            model_output = kwargs.pop(self.model_output)
-            logits = model_output.pop(LOGITS)
-            spectrograms = model_output.pop(SPECTROGRAMS)
-            # Compute loss
-            loss, components = self._loss(
-                token_logits=logits,
-                token_labels=labels,
-                predicted_spectrograms=spectrograms,
-                target_spectrograms=kwargs.get(INPUT_SPECTROGRAMS)
-            ) if labels is not None else None, None
             # Update output dict
             kwargs |= {
                 LOGITS: logits,
@@ -946,275 +1085,3 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
         return [
             spectrograms[:, s_idx:e_idx] for s_idx, e_idx in zip(s_idxs, e_idxs + 1)
         ]
-
-    # Lightning
-
-    def _pad_spectrogram(self, spec: torch.Tensor) -> torch.Tensor:
-        # TODO do padding replicating side slices
-        # TODO add support for cases where there isn't a single convolution with hop length equal to window length
-        n_elements = spec.size(-1)
-        expected_n_elements = int(math.ceil(n_elements / self.speech_conversion_factor)) * self.speech_conversion_factor
-        pad_left = int(math.ceil((expected_n_elements - n_elements) / 2))
-        pad_right = (expected_n_elements - n_elements) // 2
-        spec = F.pad(spec, (pad_left, pad_right), value=spec.min())
-
-        return spec
-
-    def prepare_input(
-            self,
-            text: Optional[Union[Iterable[str], str]],
-            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None
-    ) -> BatchEncoding:
-        # TODO rework checks on input
-        if isinstance(text, str):
-            return self.prepare_input([text], audio_file_paths=audio_file_paths)
-        #
-        if audio_file_paths is not None:
-            #
-            if isinstance(audio_file_paths, str):
-                return self.prepare_input(text, audio_file_paths=[[audio_file_paths]])
-            elif all(isinstance(elem, str) for elem in audio_file_paths):
-                return self.prepare_input(text, audio_file_paths=[audio_file_paths])
-            #
-            spectrograms = [
-                [
-                    self._pad_spectrogram(torch.tensor(self.audio_processor.encode(file_path)))
-                    for file_path in file_paths
-                ]
-                for file_paths in audio_file_paths
-            ]
-            text = [
-                head + str().join(
-                    self.audio_token * (spec.size(-1) // self.speech_conversion_factor) + split
-                    for spec, split in zip(sequence_spectrograms, splits)
-                )
-                for (head, *splits), sequence_spectrograms in zip(
-                    (sequence_text.split(self.audio_token) for sequence_text in text), spectrograms
-                )
-            ]
-        else:
-            spectrograms = None
-        #
-        input_encodings = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True)  # , add_special_tokens=False)
-        if spectrograms is not None:
-            audio_stream = torch.full(
-                (
-                    input_encodings.input_ids.size(0),
-                    self.audio_processor.channels,
-                    input_encodings.input_ids.size(1) * self.speech_conversion_factor
-                ),
-                torch.nan
-            )
-            if input_encodings.input_ids.size(1) >= self.tokenizer.model_max_length:
-                for i in range(input_encodings.input_ids.size(0)):
-                    mask = torch.repeat_interleave(
-                            input_encodings.input_ids[i] == self.audio_token_id,
-                            self.speech_conversion_factor,
-                            dim=-1
-                        ).unsqueeze(0).repeat((self.audio_processor.channels, 1))
-                    audio_stream[i, mask] = torch.hstack(
-                        [spec for spec in spectrograms[i]]
-                    )[:, :mask.sum() // self.audio_processor.channels].ravel()
-            else:
-                mask = torch.repeat_interleave(
-                        input_encodings.input_ids == self.audio_token_id,
-                        self.speech_conversion_factor,
-                        dim=-1
-                    ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
-                audio_stream[mask] = torch.hstack(
-                    [spec for sequence_spectrograms in spectrograms for spec in sequence_spectrograms]
-                ).ravel()
-            input_encodings[INPUT_SPECTROGRAMS] = audio_stream
-
-        return input_encodings
-
-
-    def prepare_output(
-            self,
-            text: Optional[Union[Iterable[str], str]] = None,
-            audio_file_paths: Optional[Union[Iterable[Iterable[str]], Iterable[str], str]] = None,
-            input_data: Optional[BatchEncoding] = None
-    ) -> Dict[str, Optional[torch.Tensor]]:
-        if input_data is None:
-            return self.prepare_output(input_data=self.prepare_input(text, audio_file_paths))
-        #
-        output_ids = input_data.input_ids.clone()
-        output_ids[input_data.attention_mask == 0] = -100
-        if input_data.get(INPUT_SPECTROGRAMS) is not None:
-            target_spectrogram = input_data.input_spectrograms.clone()
-            target_spectrogram[
-                ~torch.repeat_interleave(
-                    output_ids == self.audio_token_id, self.speech_conversion_factor, dim=-1
-                ).unsqueeze(1).repeat((1, self.audio_processor.channels, 1))
-            ] = torch.nan
-        else:
-            target_spectrogram = None
-
-        return {TOKEN_LABELS: output_ids, TARGET_SPECTROGRAMS: target_spectrogram}
-
-    def collate(self, samples: Iterable[Dict]) -> Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]]:
-        logger.info('Collate started')
-        input_encodings = self.prepare_input(
-            [sample['text'] for sample in samples],
-            [sample.get('audio_file_paths', list()) for sample in samples]
-        )
-        logger.info(
-            f'Input encoded - Input ids shape: {input_encodings.input_ids.size()}, '
-            f'Spectrogram shape: {input_encodings.input_spectrograms.size() if input_encodings.input_spectrograms is not None else None}'
-        )
-        target_output = self.prepare_output(input_data=input_encodings)
-        logger.info(
-            'Output encoded'
-        )
-        logger.info('Collate completed')
-
-        return input_encodings, target_output
-
-    def configure_optimizers(self):
-        # Build optimiser
-        optimiser_params = self.optimiser_params.copy()
-        optimiser_dtype = optimiser_params.pop('dtype')
-        if isinstance(self.base_model, PeftModel):
-            params = [
-                p for k, p in self.named_parameters()
-                if 'lora' in k or 'speech' in k or 'modality_switch' in k or 'post_net' in k
-            ]
-        else:
-            params = self.parameters()
-        optimiser = optimizer_mapping[optimiser_dtype](params, **optimiser_params)
-        # Check whether LR scheduling is required
-        if len(self.lr_scheduler_params) > 0:
-            lr_scheduler_params = self.lr_scheduler_params.copy()
-            lr_scheduler_dtype = lr_scheduler_params.pop('dtype')
-            lr_scheduler_interval = lr_scheduler_params.pop('interval')
-            if lr_scheduler_params == 'step':
-                lr_scheduler_params['steps_per_epoch'] = int(math.ceil(self._steps_per_epoch))
-            lr_scheduler = lr_scheduler_mapping[lr_scheduler_dtype](optimiser, **lr_scheduler_params)
-            return [optimiser], [{'scheduler': lr_scheduler, 'interval': lr_scheduler_interval}]
-        else:
-            return optimiser
-
-    def _step(
-            self,
-            split: str,
-            mini_batch: Tuple[BatchEncoding, Dict[str, Optional[torch.Tensor]]],
-            mini_batch_idx: int
-    ) -> Tuple[Dict, torch.Tensor]:
-        logger.info('Step started')
-        # Unpack the encoding and the target labels
-        input_encodings, target_output = mini_batch
-        # input_encodings = input_encodings.to(self.device)
-        # target_output = {k: v.to(self.device) for k, v in target_output.items()}
-        # Compute output
-        wrapper_output = self.forward(**input_encodings, use_cache=False)
-        # Compute LM loss token-wise
-        loss, loss_components = self._loss(
-            token_logits=wrapper_output[LOGITS],
-            predicted_spectrograms=wrapper_output[SPECTROGRAMS],
-            **target_output
-        )
-
-        # Log LM loss
-        self.log(f'Loss/{split.capitalize()}', loss)
-        for k, v in loss_components.items():
-            self.log(f'{k.capitalize()}/{split.capitalize()}', v)
-        logger.info('Collate completed')
-
-        return wrapper_output, loss
-
-    def _eval_step(self, split: str, mini_batch, mini_batch_idx: int):
-        # Unpack the encoding and the target labels
-        input_encodings, target_output = mini_batch
-        # Run generic forward step
-        output, loss = self._step(split, mini_batch, mini_batch_idx)
-        # Take logits
-        logits: torch.tensor = output[LOGITS]
-        # Shift logits to exclude the last element
-        logits = logits[..., :-1, :].contiguous()
-        # shift labels to exclude the first element
-        labels = target_output[TOKEN_LABELS][..., 1:].contiguous()
-
-        # Log Perplexity
-        for metric_id, metric in self.metrics.items():
-            if metric_id == 'Perplexity':
-                metric.update(logits, labels)
-            else:
-                # TODO manage generative metrics
-                pass
-
-        return loss
-
-    def fine_tune(
-            self,
-            data_splits: Dict[str, Dataset],
-            *_,
-            dir_path: Optional[str] = None,
-            callbacks: Optional[Dict[str, pl_callbacks.Callback]] = None,
-            loggers: Optional[Iterable[pl_loggers.Logger]] = None
-    ) -> 'CausalLMWrapper':
-        # Fit audio scaler
-        # self.audio_processor.fit_scaler(data_splits['train'].get_audio_scaling_samples())
-        logger.info("Audio scaler fitting completed")
-        # Create data loaders
-        data_loaders: Dict[str, DataLoader] = {
-            split: DataLoader(
-                data,
-                collate_fn=self.collate,
-                shuffle=split == 'train', # and len(data) < 10000,
-                # TODO find better solution to shuffling large data sets
-                **self.data_loader_params[split]
-            )
-            for split, data in data_splits.items()
-        }
-        logger.info("Data loaders instantiated")
-        #
-        self._steps_per_epoch = len(data_loaders['train']) / self.trainer_params.get('accumulate_grad_batches', 1)
-        # Create Trainer
-        self.configure_metrics()
-        self.disable_benchmarking()
-        trainer = L.Trainer(
-            default_root_dir=dir_path,
-            **self.trainer_params,
-            callbacks=list(callbacks.values()),
-            logger=loggers
-        )
-        logger.info("Trainer instantiated")
-        # Train neural network
-        self.enable_wrapper()
-        self.train()
-        start_time = datetime.now()
-        logger.info("Training started")
-
-        # from tqdm import tqdm
-        # for i, mini_batch in tqdm(enumerate(data_loaders['train'])):
-        #     input_encoding, target_output = mini_batch
-        #     input_encoding = input_encoding.to('cuda')
-        #     target_output = {k: v.to('cuda') for k, v in target_output.items()}
-        #     _, loss = self._step('train', (input_encoding, target_output), i)
-        #     loss.backward()
-        # exit(0)
-
-        trainer.fit(self, train_dataloaders=data_loaders['train'], val_dataloaders=data_loaders['validation'])
-        stop_time = datetime.now()
-        logger.info(f"Training completed (elapsed time: {stop_time - start_time})")
-        # Load torch checkpoint
-        if 'model_checkpoint' in callbacks and isinstance(callbacks['model_checkpoint'], pl_callbacks.ModelCheckpoint):
-            if os.path.exists(callbacks['model_checkpoint'].best_model_path):
-                checkpoint = torch.load(callbacks['model_checkpoint'].best_model_path, weights_only=True)
-                self.load_state_dict(checkpoint['state_dict'], strict=False)
-                logger.info(f"Best checkpoint restored from {callbacks['model_checkpoint'].best_model_path}")
-            else:
-                logger.info(f"No checkpoint to restore")
-        # Test neural network
-        start_time = datetime.now()
-        logger.info("Validation started")
-        trainer.validate(self, dataloaders=data_loaders['validation'])
-        stop_time = datetime.now()
-        logger.info(f"Validation completed (elapsed time: {stop_time - start_time})")
-        start_time = datetime.now()
-        logger.info("Testing started")
-        trainer.test(self, dataloaders=data_loaders['test'])
-        stop_time = datetime.now()
-        logger.info(f"Testing completed (elapsed time: {stop_time - start_time})")
-
-        return self

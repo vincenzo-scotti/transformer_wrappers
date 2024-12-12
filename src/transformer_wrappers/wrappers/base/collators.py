@@ -6,6 +6,8 @@ import torch
 from transformers.data.data_collator import DataCollatorMixin
 from transformers import PreTrainedTokenizer, BatchEncoding
 
+from .constants import *
+
 
 @dataclass
 class CausalLMDataCollator(DataCollatorMixin):
@@ -30,12 +32,12 @@ class CausalLMDataCollator(DataCollatorMixin):
             return self._prepare_output(input_data=self._prepare_input(text))
         else:
             output_ids = input_data.input_ids.clone()
-        output_ids[~(input_data.attention_mask.bool())] = -100
+            output_ids[~(input_data.attention_mask.bool())] = -100
 
-        return output_ids
+            return output_ids
 
     def torch_call(self, examples: List[Union[List[int], Any, Dict[str, Any]]]) -> BatchEncoding:
         batch_encoding = self._prepare_input(sample['text'] for sample in examples)  # TODO fixme
-        batch_encoding['labels'] = self._prepare_output(input_data=batch_encoding)
+        batch_encoding[LABELS] = self._prepare_output(input_data=batch_encoding)
 
         return batch_encoding
