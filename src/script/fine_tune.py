@@ -27,7 +27,7 @@ def main(args: Namespace):
     data_splits = dict()
     for split, split_configs in configs['data'].items():
         data_splits[split] = corpus_mapping[split_configs['corpus']](
-            split, model.tokenizer, **split_configs.get('params', dict())
+            split=split, tokenizer=model.tokenizer, **split_configs.get('params', dict())
         ) # TODO add support for hugging face built in data sets
     logging.info("Data set splits loaded")
     # Create callbacks
