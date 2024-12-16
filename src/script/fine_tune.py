@@ -23,6 +23,7 @@ def main(args: Namespace):
     # Build model
     model_type: Type[CausalLMWrapper] = causal_lm_mapping[configs['model'].pop('dtype')]
     model: CausalLMWrapper = model_type.from_pretrained(**configs['model'])
+    model.enable_benchmarking()
     logging.info("Model built")
     data_splits = dict()
     for split, split_configs in configs['data'].items():
