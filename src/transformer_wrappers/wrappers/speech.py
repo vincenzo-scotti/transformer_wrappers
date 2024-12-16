@@ -21,6 +21,7 @@ from transformers import BitsAndBytesConfig
 from peft import LoraConfig
 from peft.peft_model import PeftModel
 from transformers import logging as hf_logging
+from transformers import DataCollator
 
 from .base.collators import CausalLMDataCollator
 
@@ -224,6 +225,7 @@ class AudioProcessor:
 class SpeechCausalLMDataCollator(CausalLMDataCollator):
     audio_processor: Optional[AudioProcessor] = None
     audio_token: Optional[str] = None
+    audio_token_id: Optional[int] = None
     speech_conversion_factor: Optional[int] = None
 
     def _pad_spectrogram(self, spec: torch.Tensor) -> torch.Tensor:
@@ -244,14 +246,14 @@ class SpeechCausalLMDataCollator(CausalLMDataCollator):
     ) -> BatchEncoding:
         # TODO rework checks on input
         if isinstance(text, str):
-            return self.prepare_input([text], audio_file_paths=audio_file_paths)
+            return self._prepare_input([text], audio_file_paths=audio_file_paths)
         #
         if audio_file_paths is not None:
             #
             if isinstance(audio_file_paths, str):
-                return self.prepare_input(text, audio_file_paths=[[audio_file_paths]])
+                return self._prepare_input(text, audio_file_paths=[[audio_file_paths]])
             elif all(isinstance(elem, str) for elem in audio_file_paths):
-                return self.prepare_input(text, audio_file_paths=[audio_file_paths])
+                return self._prepare_input(text, audio_file_paths=[audio_file_paths])
             #
             spectrograms = [
                 [
@@ -313,7 +315,7 @@ class SpeechCausalLMDataCollator(CausalLMDataCollator):
             input_data: Optional[BatchEncoding] = None
     ) -> Tuple[torch.tensor, Optional[torch.tensor]]:
         if input_data is None:
-            return self.prepare_output(input_data=self._prepare_input(text, audio_file_paths))
+            return self._prepare_output(input_data=self._prepare_input(text, audio_file_paths))
         else:
             output_ids = input_data.input_ids.clone()
             output_ids[input_data.attention_mask == 0] = -100
@@ -621,6 +623,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     _transformer_dtype: Type[TransformerWrapper] = SpeechTransformerWrapper
     _lm_head_dtype: Type[ModuleWrapper] = SpeechLMHeadWrapper
 
+    _collator_dtype: Optional[Type[DataCollator]] = SpeechCausalLMDataCollator
+
     def _post_init_operations(
             self,
             audio_processor: AudioProcessor,
@@ -648,14 +652,6 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             post_net=post_net,
             super_wrapper=self
         ),
-
-        # Lightning module parameters for fine-tuning
-        self.optimiser_params = dict()
-        self.lr_scheduler_params = dict()
-        self.trainer_params = dict()
-        self.data_loader_params = dict()
-        self.metrics = None
-        self._steps_per_epoch = None
 
     @property
     def audio_processor(self):
@@ -935,13 +931,22 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
     ) -> Iterator[Tuple[str, nn.Parameter]]:
         if isinstance(self.base_model, PeftModel):
             return (
-                k, p
+                (k, p)
                 for k, p in super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
                 if any(tag in k for tag in ('lora', 'speech', 'modality_switch', 'post_net'))
             )
         else:
             return super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
 
+    def get_data_collator(self, *args, **kwargs) -> DataCollator:
+        return super().get_data_collator(
+            *args,
+            audio_processor=self.audio_processor,
+            audio_token=self.audio_token,
+            audio_token_id=self.audio_token_id,
+            speech_conversion_factor=self.speech_conversion_factor,
+            **kwargs
+        )
 
     def _post_process_output(
             self,
@@ -964,8 +969,8 @@ class SpeechCausalLMWrapper(CausalLMWrapper):
             token_logits=logits,
             token_labels=labels,
             predicted_spectrograms=spectrograms,
-            target_spectrograms=kwargs.get(INPUT_SPECTROGRAMS)
-        ) if labels is not None else None, None
+            target_spectrograms=kwargs.get(TARGET_SPECTROGRAMS)
+        ) if labels is not None else (None, None)
         #
         if base_model_output:
             if hidden_states is not None:

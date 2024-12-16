@@ -1249,7 +1249,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
     ) -> Iterator[Tuple[str, nn.Parameter]]:
         if isinstance(self.base_model, PeftModel):
             return (
-                k, p
+                (k, p)
                 for k, p in super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
                 if 'lora' in k
             )
@@ -1257,7 +1257,7 @@ class PreTrainedModelWrapper(PreTrainedModel, BaseWrapper):
             return super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
 
     def get_data_collator(self, *args, **kwargs) -> DataCollator:
-        return self._collator_dtype(self.tokenizer, *args, **kwargs)
+        return self._collator_dtype(*args, **kwargs)
 
     def get_trainer(self, *args, **kwargs) -> SFTTrainer:
         return self._trainer_dtype(*args, model=self, **kwargs)
@@ -1713,6 +1713,17 @@ class CausalLMWrapper(PreTrainedModelWrapper):
 
     def get_data_collator(self, *args, **kwargs) -> DataCollator:
         return super().get_data_collator(self.tokenizer, *args, **kwargs)
+
+    @staticmethod
+    def _loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        # Shift logits to exclude the last element
+        logits = logits[..., :-1, :].contiguous()
+        # shift labels to exclude the first element
+        labels = labels[..., 1:].contiguous()
+        # Compute LM loss token-wise
+        loss: torch.Tensor = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1))
+
+        return loss
 
     def _wrapped_forward(self, **kwargs):
         #
