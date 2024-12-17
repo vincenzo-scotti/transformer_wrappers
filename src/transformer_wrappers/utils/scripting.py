@@ -5,7 +5,6 @@ from datetime import datetime
 
 from itertools import product
 
-import lightning as L
 import torch
 from transformers import BitsAndBytesConfig
 from peft import LoraConfig
@@ -43,8 +42,6 @@ def init_training_environment(config_file_path: str) -> Dict:
     configs['current_model_dir_path'] = current_model_dir_path
     if not os.path.exists(current_model_dir_path):
         os.mkdir(current_model_dir_path)
-    # Set random seed
-    L.seed_everything(configs.get('random_seed'), workers=True)
     # Dump configs
     config_dump_file_path = os.path.join(current_experiment_dir_path, f'config.yml')
     copy2(config_file_path, config_dump_file_path)
@@ -92,8 +89,6 @@ def init_evaluation_environment(config_file_path: str) -> Dict:
     configs['current_experiment_dir_path'] = current_experiment_dir_path
     if not os.path.exists(current_experiment_dir_path):
         os.mkdir(current_experiment_dir_path)
-    # Set random seed
-    L.seed_everything(configs.get('random_seed'), workers=True)
     # Dump configs
     config_dump_file_path = os.path.join(current_experiment_dir_path, f'config.yml')
     copy2(config_file_path, config_dump_file_path)
