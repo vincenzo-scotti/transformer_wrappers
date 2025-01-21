@@ -101,7 +101,10 @@ class AudioProcessor:
             n_fft: int = 512,
             n_mel: Optional[int] = 80,  # Typical value is 80 if not None, change to match speech embeddings requirements
             n_mfcc: Optional[int] = None,  # Typical value is 12 if not None, change to match speech embedding requirements
+            ref: float = 1.0,  # Reference for dB inversion
+            vocoder: bool = False,   # If none defaults to Griffin-Limm algorithm
             pre_trained_scaler_path: Optional[str] = None,
+            device: Optional[Union[torch.device, str]] = None
     ):
         self.sr: int = sr
         self.win_size: float = win_size
@@ -109,6 +112,7 @@ class AudioProcessor:
         self.n_fft: int = n_fft
         self.n_mel: Optional[int] = n_mel
         self.n_mfcc: Optional[int] = n_mfcc
+        self.ref: float = ref
         #
         self._win_size_samples: int = int(math.ceil(self.win_size * self.sr))
         self._hop_size_samples: int = int(math.ceil(self.hop_size * self.sr))
@@ -116,6 +120,14 @@ class AudioProcessor:
         self._scaler: Optional[StandardScaler] = None
         if pre_trained_scaler_path is not None:
             self.load_scaler(pre_trained_scaler_path)
+        #
+        self._vocoder: Optional[torch.nn.Module] = None
+        if vocoder:
+            device = device if device is not None else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            self._vocoder = torch.hub.load('NVIDIA/DeepLearningExamples:torchhub', 'nvidia_waveglow', model_math='fp16')
+            self._vocoder = self._vocoder.remove_weightnorm(self._vocoder)
+            self._vocoder = self._vocoder.to(device)
+            self._vocoder.eval()
 
     @property
     def channels(self) -> int:
@@ -125,7 +137,6 @@ class AudioProcessor:
             return self.n_mel
         else:
             return self.n_fft
-
 
     def load_audio(self, path: str) -> np.ndarray:
         speech_data, _ = librosa.load(path, sr=self.sr)
@@ -146,6 +157,7 @@ class AudioProcessor:
             if self.n_mel is None and self.n_mfcc is None:
                 spec = librosa.stft(
                     y=speech_data,
+                    sr=self.sr,
                     n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
                     win_length=self._win_size_samples,
                     hop_length=self._hop_size_samples
@@ -158,6 +170,7 @@ class AudioProcessor:
             elif self.n_mel is not None and self.n_mfcc is None:
                 mel_spec = librosa.feature.melspectrogram(
                     y=speech_data,
+                    sr=self.sr,
                     n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
                     win_length=self._win_size_samples,
                     hop_length=self._hop_size_samples,
@@ -189,12 +202,53 @@ class AudioProcessor:
         else:
             raise TypeError(f'Unsupported type {type(speech_data)}')
 
-    def decode(self, *args, **kwargs):
-        raise NotImplementedError(
-            'Implement Griffin-Limm algorithm or Vocder DNN for this step '
-            '(see: https://github.com/vincenzo-scotti/tts_mozilla_api and '
-            'https://github.com/vincenzo-scotti/tts_mellotron_api)'
-        )
+    def decode(
+            self, speech_data: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor]
+    ) -> Union[List[np.ndarray], np.ndarray]:
+        # NOTE there is an error, the power-to-dB and dB-to-power functions actually do only dB conversion
+        if isinstance(speech_data, Iterable):
+            return []
+        elif isinstance(speech_data, torch.Tensor):
+            return self.decode(speech_data.to_numpy())
+        if self._scaler is not None:
+            speech_data = self._scaler.inverse_transform(speech_data.transpose(-1, -2)).transpose(-1, -2)
+        if self._vocoder is not None:
+            # TODO add resampling
+            # TODO understand whether the input mel-spectrogram to the vocoder need some normalisation (it shouldn't, just try it)
+            raise NotImplementedError()
+        else:
+            if self.n_mel is None and self.n_mfcc is None:
+                speech_data = librosa.griffinlim(
+                    librosa.db_to_power(speech_data, ref=self.ref) ** 0.5,
+                    n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
+                    win_length=self._win_size_samples,
+                    hop_length=self._hop_size_samples,
+                )
+            elif self.n_mel is not None and self.n_mfcc is None:
+                speech_data = librosa.feature.inverse.mel_to_audio(
+                    mfcc=speech_data,
+                    sr=self.sr,
+                    n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
+                    win_length=self._win_size_samples,
+                    hop_length=self._hop_size_samples,
+                    ref=self.ref
+                )
+            elif self.n_mel is not None and self.n_mfcc is not None:
+                speech_data = librosa.feature.inverse.mfcc_to_audio(
+                    mfcc=speech_data,
+                    sr=self.sr,
+                    n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
+                    win_length=self._win_size_samples,
+                    hop_length=self._hop_size_samples,
+                    n_mels=self.n_mel,
+                    ref=self.ref
+                )
+            else:
+                raise ValueError(
+                    'Invalid configuration, `n_mel` attribute must be specified when `n_mfcc` is specified'
+                )
+
+        return speech_data
 
     @staticmethod
     def get_encoded_length(speech_data: Union[np.ndarray, torch.Tensor], embedding_dim: int):
