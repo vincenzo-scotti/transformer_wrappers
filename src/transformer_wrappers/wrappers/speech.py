@@ -206,10 +206,10 @@ class AudioProcessor:
             self, speech_data: Union[Iterable[Union[np.ndarray, torch.Tensor]], np.ndarray, torch.Tensor]
     ) -> Union[List[np.ndarray], np.ndarray]:
         # NOTE there is an error, the power-to-dB and dB-to-power functions actually do only dB conversion
-        if isinstance(speech_data, Iterable):
-            return []
+        if isinstance(speech_data, Iterable) and not isinstance(speech_data, (np.ndarray, torch.Tensor)):
+            return [self.decode(speech_data_) for speech_data_ in speech_data]
         elif isinstance(speech_data, torch.Tensor):
-            return self.decode(speech_data.to_numpy())
+            return self.decode(speech_data.numpy())
         if self._scaler is not None:
             speech_data = self._scaler.inverse_transform(speech_data.transpose(-1, -2)).transpose(-1, -2)
         if self._vocoder is not None:
@@ -219,19 +219,18 @@ class AudioProcessor:
         else:
             if self.n_mel is None and self.n_mfcc is None:
                 speech_data = librosa.griffinlim(
-                    librosa.db_to_power(speech_data, ref=self.ref) ** 0.5,
+                    S=librosa.db_to_power(speech_data, ref=self.ref) ** 0.5,
                     n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
                     win_length=self._win_size_samples,
                     hop_length=self._hop_size_samples,
                 )
             elif self.n_mel is not None and self.n_mfcc is None:
                 speech_data = librosa.feature.inverse.mel_to_audio(
-                    mfcc=speech_data,
+                    M=speech_data,
                     sr=self.sr,
                     n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
                     win_length=self._win_size_samples,
-                    hop_length=self._hop_size_samples,
-                    ref=self.ref
+                    hop_length=self._hop_size_samples
                 )
             elif self.n_mel is not None and self.n_mfcc is not None:
                 speech_data = librosa.feature.inverse.mfcc_to_audio(
@@ -240,8 +239,7 @@ class AudioProcessor:
                     n_fft=self.n_fft - int(self.n_fft % 2 == 0),  # TODO check this
                     win_length=self._win_size_samples,
                     hop_length=self._hop_size_samples,
-                    n_mels=self.n_mel,
-                    ref=self.ref
+                    n_mels=self.n_mel
                 )
             else:
                 raise ValueError(
@@ -329,7 +327,7 @@ class SpeechCausalLMDataCollator(CausalLMDataCollator):
             spectrograms = None
         #
         input_encodings = self.tokenizer(text, return_tensors='pt', padding=True, truncation=True)  # , add_special_tokens=False)
-        if spectrograms is not None:
+        if spectrograms is not None and any(len(spectrograms_) > 0 for spectrograms_ in spectrograms):
             audio_stream = torch.full(
                 (
                     input_encodings.input_ids.size(0),
