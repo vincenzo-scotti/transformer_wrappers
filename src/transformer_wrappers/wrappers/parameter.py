@@ -22,8 +22,14 @@ class ParameterCausalLMWrapper(CausalLMWrapper):
     def add_parameters(self, parameters: List[str] = None):
         if parameters:
             self._gen_parameters = self._gen_parameters.union(set(parameters))
-            new_parameters = self._original_parameters + [
-                Parameter(param, Parameter.KEYWORD_ONLY, default=None) for param in self._gen_parameters]
+
+            if "kwargs" in [p.name for p in self._original_parameters]:
+                new_parameters = self._original_parameters[:-1] + [
+                    Parameter(param, Parameter.KEYWORD_ONLY, default=None) for param in self._gen_parameters] + \
+                    [self._original_parameters[-1]]
+            else:
+                new_parameters = self._original_parameters + [
+                    Parameter(param, Parameter.KEYWORD_ONLY, default=None) for param in self._gen_parameters]
 
             def parameter_forward(**new_parameters):
                 self.base_model.forward(new_parameters)
